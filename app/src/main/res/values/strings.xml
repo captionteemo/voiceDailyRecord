@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">回声日志</string>
+
+    <!-- 通知渠道名称（架构 7.5） -->
+    <string name="channel_monitor_name">监听常驻</string>
+    <string name="channel_monitor_desc">监听/录音状态常驻通知，不可滑掉</string>
+    <string name="channel_progress_name">任务进度</string>
+    <string name="channel_progress_desc">结算、转写与模型下载进度通知</string>
+    <string name="channel_alert_name">重要提醒</string>
+    <string name="channel_alert_desc">记录中断恢复与错误告警</string>
+
+    <!-- 常驻监听通知（FR-013） -->
+    <string name="notify_monitor_title_listening">回声日志监听中</string>
+    <string name="notify_monitor_title_recording">正在录音</string>
+    <string name="notify_monitor_title_paused">监听已暂停</string>
+    <string name="notify_monitor_text_listening">静默监听 %1$s · 今日 %2$d 段 · %3$d 个标记</string>
+    <string name="notify_monitor_text_recording">本段 %1$s · 录音仅保存在本机</string>
+    <string name="notify_monitor_text_paused">已暂停 · 今日 %1$d 段 · 点「继续」恢复监听</string>
+    <string name="notify_privacy_mode_meeting">会议记录模式</string>
+    <string name="notify_marker_input_label">备注（可空）</string>
+    <string name="notify_action_marker">打点</string>
+    <string name="notify_action_pause">暂停</string>
+    <string name="notify_action_stop">结束</string>
+    <string name="notify_action_start_record">开始录音</string>
+    <string name="notify_action_stop_record">停止录音</string>
+
+    <!-- 进度通知 -->
+    <string name="notify_progress_text">已完成 %1$d%%</string>
+
+    <!-- 中断恢复通知（NFR-003） -->
+    <string name="notify_recovery_title">记录已中断</string>
+    <string name="notify_recovery_text">点击恢复后台录音监听</string>
+    <string name="notify_action_resume">恢复记录</string>
+
+    <!-- Worker 结算阶段（channel_progress 通知标题） -->
+    <string name="worker_stage_prepare">准备结算</string>
+    <string name="worker_stage_merge">正在合并音频</string>
+    <string name="worker_stage_transcribe">正在转写</string>
+    <string name="worker_stage_summarize">正在生成总结</string>
+
+    <!-- 底部 Tab -->
+    <string name="tab_today">今天</string>
+    <string name="tab_history">历史</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- 隐私告知（FR-014 首次启动流） -->
+    <string name="privacy_title">隐私告知</string>
+    <string name="privacy_body">回声日志会在本机静默监听环境声音，仅在检测到人声突变时自动录音并保存片段。\n\n· 音频与文字全部仅保存在本机，不会上传；\n· 录音期间会有不可关闭的常驻通知（系统要求）；\n· 端侧转写与总结模型需另行下载（合计约 1.5GB，仅 Wi-Fi 下载）；\n· 你可以随时在「历史」中删除任意一天的全部数据。</string>
+    <string name="privacy_confirm">我已了解并同意</string>
+    <string name="privacy_disagree">暂不使用</string>
+
+    <!-- 今天页（PRD 4.1） -->
+    <string name="today_start_record">开始记录</string>
+    <string name="today_stop_settle">结束（结算当天）</string>
+    <string name="today_hint_idle">开启后将静默监听，有声音时自动录音</string>
+    <string name="today_add_marker">一键打点</string>
+    <string name="today_status_listening">监听中</string>
+    <string name="today_status_recording">正在录音</string>
+    <string name="today_status_paused">已暂停</string>
+    <string name="today_pause">暂停监听</string>
+    <string name="today_resume">继续监听</string>
+    <string name="today_paused_hint">暂停中不会录音，继续后恢复监听</string>
+    <string name="today_segments_stat">今日片段</string>
+    <string name="today_markers_stat">打点</string>
+    <string name="today_settling">结算中</string>
+    <string name="today_settle_progress">结算进度 %1$d%%</string>
+    <string name="today_settle_error">结算失败：%1$s</string>
+    <string name="today_retry_settle">重试结算</string>
+    <string name="today_view_summary">查看当天总结</string>
+    <string name="today_view_timeline">查看当天时间线</string>
+    <string name="today_no_summary">当天总结尚未生成</string>
+    <string name="today_summary_ready">当天已归档</string>
+    <string name="today_error_generic">出错了：%1$s</string>
+    <string name="today_today_date">今天 %1$s</string>
+
+    <!-- 服务中断恢复（应用内手动路径，NFR-003） -->
+    <string name="today_recover_title">监听已中断</string>
+    <string name="today_recover_desc">服务可能已被系统停止，可手动立即恢复</string>
+    <string name="today_recover_action">立即恢复</string>
+
+    <!-- 模型未就绪提示（FR-012） -->
+    <string name="today_model_hint">下载端侧模型以启用转写与总结</string>
+    <string name="today_model_action">去下载</string>
+
+    <!-- 打点备注弹窗（PRD 4.1：轻量输入框，可跳过） -->
+    <string name="marker_dialog_title">添加打点备注</string>
+    <string name="marker_dialog_hint">备注（可空）</string>
+    <string name="marker_dialog_skip_hint">留空直接打点</string>
+    <string name="marker_dialog_confirm">打点</string>
+    <string name="marker_dialog_cancel">取消</string>
+
+    <!-- 当天时间线页（PRD 4.2） -->
+    <string name="timeline_title">当天时间线</string>
+    <string name="timeline_canvas_desc">全天时间轴：色块为录音片段，旗标为打点标记，点击可定位</string>
+    <string name="timeline_mode_segment">按片段</string>
+    <string name="timeline_mode_halfhour">按半小时</string>
+    <string name="timeline_empty">当天暂无录音片段</string>
+    <string name="timeline_play">播放</string>
+    <string name="timeline_pause">暂停</string>
+    <string name="timeline_transcript_pending">未转写</string>
+    <string name="timeline_transcript_failed">转写失败</string>
+    <string name="timeline_marker_count">%1$d 个标记</string>
+    <string name="timeline_generate_summary">生成总结</string>
+    <string name="timeline_summary_done">总结已生成</string>
+    <string name="timeline_open_folder">打开文件目录</string>
+    <string name="timeline_folder_opened">正在打开文件目录</string>
+    <string name="timeline_folder_failed">未找到可打开目录的文件管理器</string>
+
+    <!-- 总结详情页（PRD 4.3） -->
+    <string name="summary_title">当天总结</string>
+    <string name="summary_section_summary">全天摘要</string>
+    <string name="summary_section_timeline">关键时间线</string>
+    <string name="summary_section_todos">待办事项</string>
+    <string name="summary_section_decisions">关键决策</string>
+    <string name="summary_section_agreements">约定</string>
+    <string name="summary_copy">复制</string>
+    <string name="summary_copied">已复制到剪贴板</string>
+    <string name="summary_empty">总结尚未生成</string>
+    <string name="summary_empty_desc">当天结算完成后，这里会展示全天摘要、关键时间线与待办</string>
+    <string name="summary_play_all">播放全天录音</string>
+    <string name="summary_pause_all">暂停播放</string>
+    <string name="summary_delete_day">删除当天</string>
+    <string name="summary_total_duration">总时长 %1$s</string>
+    <string name="summary_model_badge">由 %1$s 生成</string>
+    <string name="summary_todo_undo">标记为未完成</string>
+    <string name="summary_todo_done">已完成</string>
+    <string name="summary_todo_pending">待完成</string>
+    <string name="summary_settling_desc">结算进行中（%1$d%%），完成后自动展示</string>
+
+    <!-- 历史列表页（PRD 4.4） -->
+    <string name="history_title">历史记录</string>
+    <string name="history_empty_title">还没有记录</string>
+    <string name="history_empty_desc">去「今天」开启第一次记录</string>
+    <string name="history_state_monitoring">监听中</string>
+    <string name="history_state_settling">结算中</string>
+    <string name="history_state_done">已完成</string>
+    <string name="history_state_idle">待机</string>
+    <string name="history_delete_day">删除 %1$s</string>
+    <string name="history_delete_confirm">删除当天全部记录？</string>
+    <string name="history_delete_confirm_desc">音频与文字都将删除，且不可恢复</string>
+    <string name="history_delete_audio_only">仅删除音频</string>
+    <string name="history_delete_text_only">仅删除文字</string>
+    <string name="history_delete_all">全部删除</string>
+    <string name="history_cancel">取消</string>
+    <string name="history_deleted">已删除</string>
+
+    <!-- 设置页（PRD 4.5） -->
+    <string name="settings_title">设置</string>
+    <string name="settings_section_ai">AI 与转写</string>
+    <string name="settings_section_privacy">隐私与通知</string>
+    <string name="settings_section_recording">录音行为</string>
+    <string name="settings_section_storage">存储</string>
+    <string name="settings_section_about">关于</string>
+    <string name="settings_sensitivity">VAD 灵敏度</string>
+    <string name="settings_sensitivity_desc">灵敏度低时需要更响的声音才会开始录音；高时轻微人声即触发</string>
+    <string name="settings_recording_mode">录音模式</string>
+    <string name="settings_recording_mode_desc">选择录音方式；修改在下一次「开始记录」时生效</string>
+    <string name="settings_schedule_template_edit">编辑课表模板 →</string>
+    <string name="settings_silence_duration">静音断段时长</string>
+    <string name="settings_silence_3s">3 秒</string>
+    <string name="settings_silence_5s">5 秒</string>
+    <string name="settings_silence_10s">10 秒</string>
+    <string name="settings_silence_desc">静音多久后自动结束当前片段</string>
+    <string name="settings_sample_rate">录音采样率</string>
+    <string name="settings_sample_rate_desc">16kHz 为转写原生推荐；越高音质越好、文件越大。修改对之后的新录音生效</string>
+    <string name="settings_sample_rate_8k">8k 省空间</string>
+    <string name="settings_sample_rate_16k">16k 推荐</string>
+    <string name="settings_sample_rate_44k">44.1k</string>
+    <string name="settings_sample_rate_48k">48k</string>
+    <string name="settings_privacy_mode">隐私模式</string>
+    <string name="settings_privacy_mode_desc">影响常驻通知的展示文案</string>
+    <string name="settings_cloud_enhance">云端增强</string>
+    <string name="settings_cloud_enhance_desc">云端增强转写将在后续版本提供（P1 规划中）</string>
+    <string name="settings_encryption">本地加密</string>
+    <string name="settings_encryption_desc">本地加密将在后续版本提供（P1 规划中）</string>
+    <string name="settings_models">模型管理</string>
+    <string name="settings_models_desc">查看 / 下载端侧转写与总结模型</string>
+    <string name="settings_storage_used">音频占用 %1$s · 可用 %2$s</string>
+    <string name="settings_storage_loading">存储统计计算中…</string>
+    <string name="settings_storage_refresh">刷新</string>
+    <string name="settings_storage_location">录音存储位置</string>
+    <string name="settings_storage_location_default">应用内部空间（默认）</string>
+    <string name="settings_storage_location_custom">已选择：%1$s</string>
+    <string name="settings_storage_pick">选择文件夹</string>
+    <string name="settings_storage_reset">恢复默认</string>
+    <string name="settings_storage_open">打开目录</string>
+    <string name="settings_storage_note">选择后，新录音（WAV）与同名转写（MD）会同时保存到所选文件夹；应用内仍保留一份用于合并与转写。进行中当天的录音保持原位置。</string>
+    <string name="worker_error_transcribe">转写失败</string>
+    <string name="worker_error_summarize">总结失败</string>
+    <string name="worker_error_no_segment">当天无可合并片段</string>
+    <string name="worker_empty_day_note">当天无录音片段</string>
+    <string name="settings_version">版本 %1$s</string>
+    <string name="settings_about_desc">端侧转写 SenseVoiceSmall · 端侧总结 Qwen2.5-1.5B\n录音与文字仅保存在本机</string>
+
+    <!-- 模型管理 / 下载引导（FR-012） -->
+    <string name="model_title">模型管理</string>
+    <string name="model_asr_name">语音转写模型（SenseVoice）</string>
+    <string name="model_llm_name">总结模型（Qwen2.5-1.5B）</string>
+    <string name="model_state_missing">未下载</string>
+    <string name="model_state_downloading">下载中 %1$d%%</string>
+    <string name="model_state_ready">已就绪</string>
+    <string name="model_state_error">下载失败，点击重试</string>
+    <string name="model_download">下载</string>
+    <string name="model_download_all">一键下载全部</string>
+    <string name="model_hint">录音功能无需模型；转写与总结需要对应模型。建议在 Wi-Fi 下下载。</string>
+    <string name="model_skip">跳过</string>
+    <string name="model_queued_message">已加入下载队列，将在 Wi-Fi 下自动开始</string>
+    <string name="model_back">返回</string>
+    <string name="model_size_hint">约 %1$s</string>
+
+    <!-- 录音模式（用户需求 4） -->
+    <string name="mode_all_day">全天录音</string>
+    <string name="mode_auto_vad">自动录音</string>
+    <string name="mode_schedule">模板录音</string>
+    <string name="mode_manual">手动录音</string>
+    <string name="today_mode_hint_all_day">全天录音已开启，将持续录到今天结束</string>
+    <string name="today_mode_hint_schedule">模板录音：仅在课表区间内录音</string>
+    <string name="today_mode_hint_manual">手动录音：点击下方按钮开始/停止录音</string>
+    <string name="today_start_record_now">开始录音</string>
+    <string name="today_stop_record_now">停止录音</string>
+    <string name="today_manual_recording">正在录音 %1$s</string>
+    <string name="today_manual_idle">未在录音</string>
+
+    <!-- 课表模板（用户需求 4：模板录音） -->
+    <string name="schedule_title">课表模板</string>
+    <string name="schedule_desc">按时间段自动启停录音，适配学生课表。每行一个区间，格式 HH:mm-HH:mm</string>
+    <string name="schedule_enable">启用模板</string>
+    <string name="schedule_name">模板名称</string>
+    <string name="schedule_import">导入模板文件</string>
+    <string name="schedule_import_desc">从 .txt 文件导入，格式：08:00-09:30 高等数学</string>
+    <string name="schedule_import_success">已导入 %1$d 个时间段</string>
+    <string name="schedule_import_failed">导入失败：%1$s</string>
+    <string name="schedule_import_empty">文件中没有可解析的时间段</string>
+    <string name="schedule_add_range">添加时间段</string>
+    <string name="schedule_range_start">开始时间</string>
+    <string name="schedule_range_end">结束时间</string>
+    <string name="schedule_range_label">备注（可选）</string>
+    <string name="schedule_save">保存</string>
+    <string name="schedule_saved">已保存</string>
+    <string name="schedule_delete">删除</string>
+    <string name="schedule_empty">还没有时间段，点击「添加时间段」或导入模板文件</string>
+    <string name="schedule_edit_title">编辑时间段</string>
+    <string name="schedule_confirm">确定</string>
+    <string name="schedule_cancel">取消</string>
+    <string name="schedule_summary">共 %1$d 个时间段</string>
+
+    <!-- 清理缓存（用户需求 2） -->
+    <string name="cleanup_title">清理缓存</string>
+    <string name="cleanup_desc">释放磁盘空间；删除后不可恢复</string>
+    <string name="cleanup_section_audio">录音原文件</string>
+    <string name="cleanup_delete_all_audio">一键删除所有录音原文件</string>
+    <string name="cleanup_delete_all_audio_desc">删除全部 WAV 原始录音（保留转写文字与总结）</string>
+    <string name="cleanup_delete_all_audio_done">已删除 %1$d 个录音文件</string>
+    <string name="cleanup_section_transcript">转写文字</string>
+    <string name="cleanup_delete_day_transcript">清除某天的转写文字</string>
+    <string name="cleanup_delete_day_transcript_desc">清除指定日期转写生成的 .md 与文字数据</string>
+    <string name="cleanup_section_summary">总结内容</string>
+    <string name="cleanup_delete_all_summary">一键清除所有总结内容</string>
+    <string name="cleanup_delete_all_summary_desc">清除全部当天的总结、待办与关键时间线</string>
+    <string name="cleanup_delete_all_summary_done">已清除 %1$d 天的总结</string>
+    <string name="cleanup_delete_day_transcript_done">已清除 %1$s 的转写文字</string>
+    <string name="cleanup_confirm_title">确认清理</string>
+    <string name="cleanup_confirm_desc_all_audio">将删除所有录音原文件（WAV），此操作不可恢复。确认继续？</string>
+    <string name="cleanup_confirm_desc_all_summary">将清除所有天的总结内容，此操作不可恢复。确认继续？</string>
+    <string name="cleanup_confirm_desc_day_transcript">将清除该天的转写文字（.md 文件与文字数据），此操作不可恢复。确认继续？</string>
+    <string name="cleanup_pick_day">选择日期</string>
+    <string name="cleanup_no_days">暂无记录</string>
+    <string name="cleanup_working">正在清理…</string>
+
+    <!-- 按日期导出（用户需求 3） -->
+    <string name="export_title">导出</string>
+    <string name="export_day_transcript">导出全天转写</string>
+    <string name="export_day_transcript_desc">将当天全部转写整理为一个带日期的 Markdown 文档</string>
+    <string name="export_success">已导出：%1$s</string>
+    <string name="export_failed">导出失败：%1$s</string>
+    <string name="export_no_content">当天没有可导出的转写内容</string>
+</resources>

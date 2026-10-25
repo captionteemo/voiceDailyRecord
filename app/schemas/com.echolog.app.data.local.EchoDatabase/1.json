@@ -1,0 +1,464 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "78c0fcab100519f00c4229ecf60c18a0",
+    "entities": [
+      {
+        "tableName": "recording_day",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`day_id` TEXT NOT NULL, `state` TEXT NOT NULL, `monitor_started_at` INTEGER NOT NULL, `monitor_ended_at` INTEGER NOT NULL, `total_record_ms` INTEGER NOT NULL, `merged_audio_path` TEXT, `summary_status` TEXT NOT NULL, `settle_progress` INTEGER NOT NULL, `settle_error` TEXT, PRIMARY KEY(`day_id`))",
+        "fields": [
+          {
+            "fieldPath": "dayId",
+            "columnName": "day_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorStartedAt",
+            "columnName": "monitor_started_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "monitorEndedAt",
+            "columnName": "monitor_ended_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalRecordMs",
+            "columnName": "total_record_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mergedAudioPath",
+            "columnName": "merged_audio_path",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "summaryStatus",
+            "columnName": "summary_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "settleProgress",
+            "columnName": "settle_progress",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "settleError",
+            "columnName": "settle_error",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "day_id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "audio_segment",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`segment_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `day_id` TEXT NOT NULL, `file_path` TEXT NOT NULL, `start_ms` INTEGER NOT NULL, `end_ms` INTEGER NOT NULL, `duration_ms` INTEGER NOT NULL, `size_bytes` INTEGER NOT NULL, `transcript_status` TEXT NOT NULL, `transcript_error` TEXT, FOREIGN KEY(`day_id`) REFERENCES `recording_day`(`day_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "segmentId",
+            "columnName": "segment_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dayId",
+            "columnName": "day_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "filePath",
+            "columnName": "file_path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startMs",
+            "columnName": "start_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endMs",
+            "columnName": "end_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "duration_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "size_bytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transcriptStatus",
+            "columnName": "transcript_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transcriptError",
+            "columnName": "transcript_error",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "segment_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_audio_segment_day_id",
+            "unique": false,
+            "columnNames": [
+              "day_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_audio_segment_day_id` ON `${TABLE_NAME}` (`day_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "recording_day",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "day_id"
+            ],
+            "referencedColumns": [
+              "day_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "marker",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`marker_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `day_id` TEXT NOT NULL, `segment_id` INTEGER, `at_ms` INTEGER NOT NULL, `note` TEXT NOT NULL, `created_at` INTEGER NOT NULL, FOREIGN KEY(`day_id`) REFERENCES `recording_day`(`day_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`segment_id`) REFERENCES `audio_segment`(`segment_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "markerId",
+            "columnName": "marker_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dayId",
+            "columnName": "day_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "segmentId",
+            "columnName": "segment_id",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "atMs",
+            "columnName": "at_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "marker_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_marker_day_id",
+            "unique": false,
+            "columnNames": [
+              "day_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_marker_day_id` ON `${TABLE_NAME}` (`day_id`)"
+          },
+          {
+            "name": "index_marker_segment_id",
+            "unique": false,
+            "columnNames": [
+              "segment_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_marker_segment_id` ON `${TABLE_NAME}` (`segment_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "recording_day",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "day_id"
+            ],
+            "referencedColumns": [
+              "day_id"
+            ]
+          },
+          {
+            "table": "audio_segment",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "segment_id"
+            ],
+            "referencedColumns": [
+              "segment_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "transcript_segment",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`ts_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `segment_id` INTEGER NOT NULL, `start_ms` INTEGER NOT NULL, `end_ms` INTEGER NOT NULL, `text` TEXT NOT NULL, FOREIGN KEY(`segment_id`) REFERENCES `audio_segment`(`segment_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "tsId",
+            "columnName": "ts_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "segmentId",
+            "columnName": "segment_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startMs",
+            "columnName": "start_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endMs",
+            "columnName": "end_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "text",
+            "columnName": "text",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "ts_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_transcript_segment_segment_id",
+            "unique": false,
+            "columnNames": [
+              "segment_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_transcript_segment_segment_id` ON `${TABLE_NAME}` (`segment_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "audio_segment",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "segment_id"
+            ],
+            "referencedColumns": [
+              "segment_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "day_summary",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`day_id` TEXT NOT NULL, `status` TEXT NOT NULL, `summary_text` TEXT NOT NULL, `timeline_json` TEXT NOT NULL, `model_name` TEXT NOT NULL, `error` TEXT, PRIMARY KEY(`day_id`), FOREIGN KEY(`day_id`) REFERENCES `recording_day`(`day_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "dayId",
+            "columnName": "day_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "summaryText",
+            "columnName": "summary_text",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timelineJson",
+            "columnName": "timeline_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelName",
+            "columnName": "model_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "day_id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": [
+          {
+            "table": "recording_day",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "day_id"
+            ],
+            "referencedColumns": [
+              "day_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "todo_item",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`todo_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `day_id` TEXT NOT NULL, `type` TEXT NOT NULL, `content` TEXT NOT NULL, `source_ms` INTEGER NOT NULL, `done` INTEGER NOT NULL, FOREIGN KEY(`day_id`) REFERENCES `recording_day`(`day_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "todoId",
+            "columnName": "todo_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dayId",
+            "columnName": "day_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "content",
+            "columnName": "content",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceMs",
+            "columnName": "source_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "done",
+            "columnName": "done",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "todo_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_todo_item_day_id",
+            "unique": false,
+            "columnNames": [
+              "day_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_todo_item_day_id` ON `${TABLE_NAME}` (`day_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "recording_day",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "day_id"
+            ],
+            "referencedColumns": [
+              "day_id"
+            ]
+          }
+        ]
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '78c0fcab100519f00c4229ecf60c18a0')"
+    ]
+  }
+}

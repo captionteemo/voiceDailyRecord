@@ -1,0 +1,2 @@
+# 占位文件：arm64-v8a 原生库存放目录。
+# libllama.so（llama.cpp 自编译产物）由 T04 放置于此，编译与获取方式见 app/libs/README.md。

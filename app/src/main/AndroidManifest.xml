@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 音频采集（FR-001/FR-002） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 前台服务（架构决策 3 第一层保活；API 29 引入 microphone 前台类型） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!--
+        结算进度通知的前台服务类型专属权限（Android 14 / API 34 起强制）：
+        DaySettleWorker 以 FOREGROUND_SERVICE_TYPE_DATA_SYNC 运行前台结算进度通知，
+        缺失该权限时系统抛 SecurityException，Worker 直接进入 FAILED 状态，
+        表现为「结束录音后进度卡在 5%、无任何错误提示、无法转写」。
+        minSdk 29 下该权限被系统自动忽略，不影响低版本行为。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+
+    <!-- 通知（FR-013 常驻通知；Android 13+ 运行时权限） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 开机自恢复（架构决策 3 第三层防线） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="true" />
+
+    <application
+        android:name=".EchoLogApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.EchoLog">
+
+        <!-- 单 Activity + Compose + Navigation（T05 装配 NavHost） -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.EchoLog"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 前台录音服务：常驻通知 + microphone 前台类型（T03 实现） -->
+        <service
+            android:name=".service.RecordingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!--
+            WorkManager 前台 Worker（DaySettleWorker 进度通知）载体：
+            targetSdk 34+ 要求显式声明 dataSync 前台类型，否则
+            setForeground 抛 ForegroundServiceTypeMissingException。
+            tools:node="merge" 与 work-runtime AAR 自带声明合并而非覆盖；
+            tools:replace="android:enabled" 覆盖 AAR 的
+            @bool/enable_system_foreground_service_default 默认值。
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge"
+            tools:replace="android:enabled" />
+
+        <!-- 开机自恢复（T03 实现）：需 exported 才能接收系统广播 -->
+        <receiver
+            android:name=".service.receiver.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 通知栏「打点 / 结束」快捷操作接收者（T03 实现）：仅应用内使用 -->
+        <receiver
+            android:name=".service.receiver.NotificationActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!--
+            移除 WorkManager 的 androidx.startup 初始化器（BUG-11 根因修复，**关键**）。
+
+            问题链（已在 work-runtime 2.10.0 字节码级验证）：
+            1. androidx.startup 的 InitializationProvider 在 Application.onCreate() **之前**
+               执行 androidx.work.WorkManagerInitializer，其 create() 调用的是
+               WorkManager.initialize(context, new Configuration.Builder().build())
+               —— **默认配置**，完全不读取 Configuration.Provider；
+            2. 于是 WorkManagerImpl.sDelegatedInstance 早已非 null，
+               WorkManagerImpl.getInstance(Context) 的 Configuration.Provider 分支
+               （字节码 offset 20-43）**永远不会执行**，
+               EchoLogApplication.workManagerConfiguration 里的 HiltWorkerFactory
+               **从不生效**；
+            3. 所有 @HiltWorker 退化为 DefaultWorkerFactory → 返回 null →
+               fallbackToReflection 用 getDeclaredConstructor(Context, WorkerParameters)
+               反射实例化，而 DaySettleWorker 等是 @AssistedInject 的多参构造
+               → NoSuchMethodException → 抛 "Could not instantiate"
+               → Worker 进入 FAILED，**doWork() 从未执行**。
+
+            症状精确吻合真机反馈「结束录音后进度卡在 5%，无法翻译成文字」：
+            - 5% 是**入队方** StopMonitoringAndSettleUseCase 写的，不是 Worker 写的
+              → Worker 从未启动，进度永远停在 5%；
+            - settleError 恒为 null → UI 无任何错误提示；
+            - ModelDownloadWorker 同样从未执行 → 1.6GB 内置模型从未落地
+              → ASR 永远 not ready → 转写必然失败。
+
+            移除后：WorkManager 首次 getInstance() 走 Configuration.Provider 分支，
+            正确装配 HiltWorkerFactory，所有 @HiltWorker 可正常注入依赖。
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <!--
+            FileProvider（用户需求 1：一键打开录音目录）。
+            暴露 {filesDir}/audio/ 给文件管理器（目录 MIME 意图）；
+            authority = {applicationId}.fileprovider，与 FolderLauncher.authority 一致。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>

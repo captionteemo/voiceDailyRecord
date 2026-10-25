@@ -1,0 +1,48 @@
+# Gradle / IDE
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# 二进制制品不入库（获取方式见 app/libs/README.md）：
+# sherpa-onnx AAR 与 llama.cpp libllama.so 由本地放置后参与构建
+app/libs/*.aar
+app/libs/*.jar
+app/src/main/jniLibs/**/*.so
+
+# 下载中断残留的截断文件（构建副产物，非源码）
+app/*.aar.truncated
+*.aar.truncated
+
+# ── 模型权重不入库（重要）────────────────────────────
+# ASR（SenseVoice int8 ONNX，239MB）与 LLM（Qwen2.5-1.5B GGUF，1.1GB）
+# 由**用户首次使用时从 ModelScope 下载**（见 ModelCatalog.builtInEntries），
+# 不打进 APK、不进版本库：
+# - GitHub 单文件硬限制 100MB，权重入库必然被拒；
+# - 权重有独立版本与许可，与代码迭代节奏不同。
+#
+# 下载地址：
+#   ASR: https://modelscope.cn/models/poloniumrock/SenseVoiceSmallOnnx/resolve/master/model.int8.onnx
+#   LLM: https://modelscope.cn/models/qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf
+app/src/main/assets/models/
+app/src/main/assets/**/*.onnx
+app/src/main/assets/**/*.gguf
+app/src/main/assets/**/*.bin
+
+# 本地下载的模型副本（运行期产物）
+models/
+*.onnx
+*.gguf
+*.part
+
+# 其他
+*.hprof
+
+# 构建日志（本地排查用，非源码）
+*.log

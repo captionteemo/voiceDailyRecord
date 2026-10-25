@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 配置（用户需求 1：一键打开录音目录）。
+    暴露 App 私有 audio 目录（录音 WAV + 同名转写 .md），
+    供 FolderLauncher 以目录 MIME 意图交给文件管理器打开。
+-->
+<paths>
+    <files-path
+        name="recordings"
+        path="audio/" />
+</paths>

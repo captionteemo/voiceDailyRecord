@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 麦克风主体（胶囊形，居中于 66dp 安全区） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28 a8,8 0 0 1 8,8 l0,16 a8,8 0 0 1 -16,0 l0,-16 a8,8 0 0 1 8,-8 z" />
+    <!-- 麦克风托架弧线 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:pathData="M42,50 a12,12 0 0 0 24,0" />
+    <!-- 立杆与底座 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M51,64 h6 v8 h-6 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,74 h20 v4 h-20 z" />
+</vector>
