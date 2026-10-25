@@ -275,4 +275,39 @@
     <string name="export_success">已导出：%1$s</string>
     <string name="export_failed">导出失败：%1$s</string>
     <string name="export_no_content">当天没有可导出的转写内容</string>
+
+    <!-- 转写全文页（独立页面：当天全部文字 + 点击定位播放 + 就地编辑 + 复制） -->
+    <string name="transcript_title">转写全文</string>
+    <string name="transcript_copy_all">复制全部</string>
+    <string name="transcript_copy_selected">复制所选</string>
+    <string name="transcript_copied_count">已复制 %1$d 条</string>
+    <string name="transcript_nothing_to_copy">没有可复制的文字</string>
+    <string name="transcript_regenerate_summary">重新生成总结</string>
+    <string name="transcript_regenerating">生成中…</string>
+    <string name="transcript_regenerate_success">已重新生成总结</string>
+    <string name="transcript_regenerate_failed">重新生成总结失败：%1$s</string>
+    <string name="transcript_regenerate_failed_no_reason">重新生成总结失败</string>
+    <string name="transcript_view_summary">查看</string>
+    <string name="transcript_selected_count">已选 %1$d 条</string>
+    <string name="transcript_exit_selection">退出选择</string>
+    <string name="transcript_edit">编辑这条转写</string>
+    <string name="transcript_edit_label">修改转写文字（保存后直接覆盖原文）</string>
+    <string name="transcript_edit_save">保存</string>
+    <string name="transcript_edit_cancel">取消</string>
+    <string name="transcript_edit_empty">转写文字不能为空</string>
+    <string name="transcript_saved">已保存</string>
+    <string name="transcript_save_failed">保存失败，请重试</string>
+    <string name="transcript_playing">正在播放</string>
+    <string name="transcript_play_unavailable">找不到对应的录音，无法播放</string>
+    <string name="transcript_empty">当天暂无转写文字</string>
+    <string name="transcript_empty_desc">结束录音并完成转写后，这里会展示全天的文字</string>
+    <string name="transcript_summary_status_label">总结：%1$s</string>
+    <string name="transcript_summary_none">未生成</string>
+    <string name="transcript_summary_pending">排队中</string>
+    <string name="transcript_summary_running">生成中</string>
+    <string name="transcript_summary_done">已生成</string>
+    <string name="transcript_summary_failed">生成失败</string>
+
+    <!-- 今天页入口（转写全文） -->
+    <string name="today_view_transcript">查看转写全文</string>
 </resources>

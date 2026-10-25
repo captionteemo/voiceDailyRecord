@@ -29,6 +29,18 @@ interface TranscriptionRepository {
      */
     suspend fun upsertTranscripts(segmentId: Long, items: List<TranscriptSegment>)
 
+    /**
+     * 修改单条转写文字（用户手动修正识别结果）。
+     *
+     * 语义：**编辑即覆盖**——只改文字内容，不保留原文副本，也不改动
+     * 时间戳与所属片段（时间轴必须与音频保持一致）。
+     *
+     * @param tsId 转写分段主键（[TranscriptSegment.tsId]）。
+     * @param text 新的文字内容。
+     * @return 受影响行数（0 = 该行已不存在，例如所属片段已被删除）。
+     */
+    suspend fun updateTranscriptText(tsId: Long, text: String): Int
+
     /** 更新片段的转写状态与失败原因。 */
     suspend fun updateSegmentTranscriptStatus(
         segmentId: Long,

@@ -51,6 +51,7 @@ import com.echolog.app.ui.components.MarkerNoteDialog
  *
  * @param onOpenTimeline 跳转当天时间线。
  * @param onOpenSummary 跳转当天总结。
+ * @param onOpenTranscript 跳转当天转写全文。
  * @param onOpenModelManager 跳转模型管理（模型未就绪提示条）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,6 +59,7 @@ import com.echolog.app.ui.components.MarkerNoteDialog
 fun TodayScreen(
     onOpenTimeline: (String) -> Unit,
     onOpenSummary: (String) -> Unit,
+    onOpenTranscript: (String) -> Unit,
     onOpenModelManager: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: TodayViewModel = hiltViewModel(),
@@ -211,6 +213,9 @@ fun TodayScreen(
                     )
                     OutlinedButton(onClick = { onOpenTimeline(state.dayId) }) {
                         Text(stringResource(R.string.today_view_timeline))
+                    }
+                    OutlinedButton(onClick = { onOpenTranscript(state.dayId) }) {
+                        Text(stringResource(R.string.today_view_transcript))
                     }
                     Button(onClick = { onOpenSummary(state.dayId) }) {
                         Text(stringResource(R.string.today_view_summary))

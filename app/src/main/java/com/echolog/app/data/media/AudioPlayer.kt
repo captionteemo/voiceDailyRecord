@@ -24,7 +24,11 @@ class AudioPlayer {
      * 播放音频文件。
      *
      * @param path 音频文件绝对路径。
-     * @param startMs 起始位置（epoch millis 偏移；0 表示从头）。
+     * @param startMs **相对本文件的播放偏移**（毫秒，0 表示从头）——
+     *   不是全天绝对时间。合并音频内的时间轴是各片段时长累加
+     *   （见 [com.echolog.app.data.media.AudioMerger] 与
+     *   [com.echolog.app.ui.transcript.TranscriptPlaybackLocator]），
+     *   传入绝对时间会被 clamp 到文件末尾。
      */
     fun play(path: String, startMs: Long = 0L) {
         release()
@@ -39,12 +43,12 @@ class AudioPlayer {
         player = created
     }
 
-    /** 跳转到指定位置（epoch millis 偏移）。 */
+    /** 跳转到指定位置（相对本文件的播放偏移，毫秒；非全天绝对时间）。 */
     fun seekTo(positionMs: Long) {
         runCatching { player?.seekTo(positionMs.coerceAtLeast(0L).toInt()) }
     }
 
-    /** 当前播放位置（epoch millis 偏移）。 */
+    /** 当前播放位置（相对本文件的播放偏移，毫秒；非全天绝对时间）。 */
     fun currentPositionMs(): Long = runCatching { player?.currentPosition?.toLong() ?: 0L }.getOrDefault(0L)
 
     /** 暂停播放。 */

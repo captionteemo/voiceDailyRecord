@@ -119,5 +119,7 @@ dependencies {
     // 仪器测试 / 调试工具
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    // AndroidJUnitRunner 所在工件（testInstrumentationRunner 指定，compose ui-test 不传递引入）
+    androidTestImplementation(libs.androidx.test.runner)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

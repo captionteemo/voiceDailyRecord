@@ -26,6 +26,7 @@ junit = "4.13.2"
 turbine = "1.1.0"
 orgJson = "20231013"
 mockito = "5.14.2"
+androidxTestRunner = "1.6.2"
 
 [libraries]
 # AndroidX 基座
@@ -72,6 +73,9 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
+# 仪器测试：testInstrumentationRunner 指定的 AndroidJUnitRunner 所在工件
+# （compose ui-test-junit4 只传递引入 core/monitor/ext:junit，不含 runner）
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

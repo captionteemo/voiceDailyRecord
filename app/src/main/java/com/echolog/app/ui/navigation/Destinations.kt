@@ -6,8 +6,8 @@ import com.echolog.app.R
 /**
  * 应用导航目的地（架构 2.5：今天 / 历史 / 设置三 Tab + 详情路由）。
  *
- * 详情页（时间线 / 总结 / 模型管理）为栈内页面，不显示底部 Tab；
- * dayId 经 [Timeline.createRoute] / [Summary.createRoute] 拼入路径。
+ * 详情页（时间线 / 总结 / 转写全文 / 模型管理）为栈内页面，不显示底部 Tab；
+ * dayId 经 [Timeline.createRoute] / [Summary.createRoute] / [Transcript.createRoute] 拼入路径。
  */
 sealed class Destination(val route: String) {
 
@@ -34,6 +34,21 @@ sealed class Destination(val route: String) {
 
         /** 组装带参路由。 */
         fun createRoute(dayId: String): String = "summary/$dayId"
+    }
+
+    /**
+     * 当天转写全文（用户需求：转写全文页）。
+     *
+     * 独立于[Timeline]（时间线按片段展示）与[Summary]（只展示总结）：
+     * 本页把当天**全部转写文字**连续呈现，并提供编辑文字 / 重新生成总结 / 复制。
+     *
+     * @param ARG_DAY_ID 路由参数名（与 [Timeline.ARG_DAY_ID] / [Summary.ARG_DAY_ID] 同名）。
+     */
+    data object Transcript : Destination("transcript/{dayId}") {
+        const val ARG_DAY_ID: String = "dayId"
+
+        /** 组装带参路由。 */
+        fun createRoute(dayId: String): String = "transcript/$dayId"
     }
 
     /** 模型管理 / 下载引导（FR-012，设置页与首启流共用）。 */

@@ -3,6 +3,16 @@
 > Android 全天候声音记录 + AI 智能总结应用——音频版 Looki L1。
 > 手动开启后台监听，安静时不录音，声音突变自动开录；晚上一键结束，全天录音自动合并、端侧转写、AI 总结（摘要 + 时间线 + 待办提取）。
 
+**仓库**：[`captionteemo/voiceDailyRecord`](https://github.com/captionteemo/voiceDailyRecord)
+
+| 项 | 值 |
+|---|---|
+| 平台 | Android 10+（minSdk 29 / targetSdk 35），仅 arm64-v8a 推理 |
+| 技术栈 | Kotlin 2.0.21 · MVVM + Clean · Compose (Material3) · Hilt · Room · WorkManager |
+| 单元测试 | 166 个用例（21 个测试类），0 失败 |
+| APK 体积 | 约 317MB（**不含模型权重**——权重由用户首次使用自行下载） |
+| 模型 | SenseVoiceSmall int8（ASR）+ Qwen2.5-1.5B-Instruct Q4_K_M（LLM），均跑在端侧 |
+
 ## 功能概览（MVP）
 
 | 模块 | 说明 |
@@ -15,6 +25,7 @@
 | AI 能力 | 混合模式：端侧默认（SenseVoiceSmall ASR + Qwen2.5-1.5B-Instruct 总结），云端增强为 P1 预留 |
 | 存储 | 纯本地（Room + 文件系统），无账号、无云同步 |
 | 隐私合规 | 首次启动隐私告知、常驻「正在录音」通知、隐私模式开关 |
+| 转写全文 | 独立页展示当天全部转写文字；点文字跳到对应音频位置播放、就地修改识别错误、一键复制全部或选段、页面内重新生成总结 |
 
 ## 功能新增（Task 6：录音治理与可控性）
 
@@ -198,5 +209,6 @@ echolog-app/
 - QA 报告（Task 7 模型内置离线 APK）：`../docs/echolog-qa-report-round4.md`
 - 需求新增说明（Task 8 模式选择 / 清理缓存 / 内容导出）：`../docs/echolog-feature-update-task8.md`
 - **BUG-11 根因修复报告（真机「进度卡 5% / 无法翻译成文字」）：`docs/BUG11_ROOTCAUSE_FIX.md`**
+- **BUG-11 修复说明（结算卡 5% / 无法翻译文字 + 权重改用户下载制）：`../docs/echolog-bug11-settle-stuck-fix.md`**
 - **团队约定：排查「用户无感知」的失败（6 条铁律 + 排查方法论）：`docs/TEAM_CONVENTIONS_SILENT_FAILURES.md`**
 - QA 报告（BUG-11 首轮）：`docs/QA_REPORT_BUG11.md`

@@ -41,6 +41,22 @@ interface TranscriptSegmentDao {
     @Insert
     suspend fun insertAll(items: List<TranscriptSegmentEntity>)
 
+    /**
+     * 修改单条转写文字（转写全文页的「编辑文字」）。
+     *
+     * 只覆盖 `text` 一列：**不动** `start_ms/end_ms/segment_id`——
+     * 用户改的是「说了什么」，不是「什么时候说的」，时间轴必须保持原样，
+     * 否则该行在时间线上的位置会与音频对不上。
+     *
+     * 产品决策：编辑即覆盖，**不保留原文副本**（无历史版本表）。
+     *
+     * @param tsId 转写分段主键。
+     * @param text 新的文字内容。
+     * @return 受影响行数（0 = 该行已不存在，例如所属片段已被删除）。
+     */
+    @Query("UPDATE transcript_segment SET text = :text WHERE ts_id = :tsId")
+    suspend fun updateText(tsId: Long, text: String): Int
+
     /** 删除某片段的全部转写（重转写前清空旧结果）。 */
     @Query("DELETE FROM transcript_segment WHERE segment_id = :segmentId")
     suspend fun deleteForSegment(segmentId: Long)

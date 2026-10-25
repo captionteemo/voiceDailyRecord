@@ -47,6 +47,17 @@ class TranscriptionRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * 覆盖单条转写文字（用户手动修正）。
+     *
+     * 只更新 `text` 列，时间戳不动——语义见
+     * [TranscriptionRepository.updateTranscriptText]。
+     */
+    override suspend fun updateTranscriptText(tsId: Long, text: String): Int =
+        withContext(ioDispatcher) {
+            transcriptDao.updateText(tsId, text)
+        }
+
     override suspend fun updateSegmentTranscriptStatus(
         segmentId: Long,
         status: TranscriptStatus,

@@ -226,6 +226,9 @@ class FakeTranscriptionRepository(
 
     private val flows = mutableMapOf<String, MutableStateFlow<List<TranscriptSegment>>>()
 
+    /** 自增主键模拟（对齐 Room 的 `ts_id` 自增，插入时分配）。 */
+    private var nextTsId = 1L
+
     /** getPendingSegments 调用计数（循环护栏用）。 */
     var queryCount = 0
         private set
@@ -244,7 +247,21 @@ class FakeTranscriptionRepository(
             .firstOrNull { it.segmentId == segmentId }?.dayId ?: return
         val flow = flows.getOrPut(dayId) { MutableStateFlow(emptyList()) }
         val kept = flow.value.filterNot { it.segmentId == segmentId }
-        flow.value = (kept + items).sortedBy { it.startMs }
+        // 对齐 Room 行为：`ts_id` 由数据库自增分配，入参 tsId 一律忽略
+        val stored = items.map { it.copy(tsId = nextTsId++) }
+        flow.value = (kept + stored).sortedBy { it.startMs }
+    }
+
+    override suspend fun updateTranscriptText(tsId: Long, text: String): Int {
+        var affected = 0
+        flows.values.forEach { flow ->
+            val current = flow.value
+            if (current.any { it.tsId == tsId }) {
+                flow.value = current.map { if (it.tsId == tsId) it.copy(text = text) else it }
+                affected++
+            }
+        }
+        return affected
     }
 
     override suspend fun updateSegmentTranscriptStatus(

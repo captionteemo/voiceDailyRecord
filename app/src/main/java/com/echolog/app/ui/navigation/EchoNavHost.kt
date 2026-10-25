@@ -44,6 +44,7 @@ import com.echolog.app.ui.settings.SettingsScreen
 import com.echolog.app.ui.summary.SummaryScreen
 import com.echolog.app.ui.timeline.DayTimelineScreen
 import com.echolog.app.ui.today.TodayScreen
+import com.echolog.app.ui.transcript.TranscriptScreen
 
 /**
  * 应用主导航框架（架构 2.5/4.1，PRD 4.1）。
@@ -101,6 +102,9 @@ fun EchoNavHost(
                     onOpenSummary = { dayId ->
                         navController.navigate(Destination.Summary.createRoute(dayId))
                     },
+                    onOpenTranscript = { dayId ->
+                        navController.navigate(Destination.Transcript.createRoute(dayId))
+                    },
                     onOpenModelManager = {
                         navController.navigate(Destination.ModelManager.route)
                     },
@@ -141,6 +145,15 @@ fun EchoNavHost(
                 SummaryScreen(
                     dayId = it.arguments?.getString(Destination.Summary.ARG_DAY_ID).orEmpty(),
                     onBack = { navController.popBackStack() },
+                )
+            }
+            composable(Destination.Transcript.route) {
+                TranscriptScreen(
+                    dayId = it.arguments?.getString(Destination.Transcript.ARG_DAY_ID).orEmpty(),
+                    onBack = { navController.popBackStack() },
+                    onOpenSummary = { dayId ->
+                        navController.navigate(Destination.Summary.createRoute(dayId))
+                    },
                 )
             }
             composable(Destination.ModelManager.route) {
