@@ -84,17 +84,45 @@ object Constants {
     const val LOW_BATTERY_THRESHOLD = 50
 
     // ── 通知渠道（架构 7.5） ──
-    const val CHANNEL_MONITOR = "channel_monitor"
+    /**
+     * 监听常驻渠道（v2）。
+     *
+     * ## 为什么是 `_v2`（用户需求：锁屏界面一键操作）
+     *
+     * v1（`channel_monitor`）的 `lockscreenVisibility` 是 **PRIVATE**——锁屏上
+     * 内容被脱敏、**action 按钮全部隐藏**，用户无法在锁屏上暂停/打点/结束。
+     * 而 Android **不允许应用更新已创建渠道的 `lockscreenVisibility`**
+     * （改了会被系统静默忽略），唯一出路是换一个新渠道 id 重建。
+     *
+     * ## 隐私权衡（有意为之，不是疏忽）
+     *
+     * v1 的 PRIVATE 是「录音状态属隐私」的取舍；v2 改为 PUBLIC 后，锁屏会
+     * 显示录音状态文案（标题 + 时长/段数）。这是「锁屏一键操作」的**前置条件**
+     * （系统在锁屏上取「渠道可见性」与「通知可见性」中更严格的一方，
+     * PRIVATE 之下 action 必然被隐藏），且锁屏属用户本人设备。
+     * 若将来要收紧，只能整体退回 PRIVATE 并放弃锁屏操作，没有中间态。
+     *
+     * v1 渠道在老设备上会残留于系统设置，[com.echolog.app.EchoLogApplication]
+     * 启动时会 `deleteNotificationChannel` 清掉。
+     *
+     * 真机实测（MIUI）：渠道创建后从系统读回的 `lockscreenVisibility` 会被
+     * 归一化为 UNSPECIFIED(-1000)，无论创建时写什么。UNSPECIFIED 语义 =
+     * 「不额外降级，以通知自身可见性为准」，故锁屏操作的实际保证落在
+     * 通知本体的 `setVisibility(PUBLIC)` 上（两侧都设，缺一不可）。
+     */
+    const val CHANNEL_MONITOR = "channel_monitor_v2"
+    /** v1 渠道 id（仅用于启动时清理残留，勿再用于发通知）。 */
+    const val CHANNEL_MONITOR_LEGACY = "channel_monitor"
     const val CHANNEL_PROGRESS = "channel_progress"
     const val CHANNEL_ALERT = "channel_alert"
 
     /**
      * 快捷录音入口渠道（用户需求：锁屏/状态栏一键开始录音）。
      *
-     * **必须与 [CHANNEL_MONITOR] 分开**：监听渠道把锁屏可见性设为 PRIVATE
-     * （录音状态属隐私，锁屏上不展示内容），而快捷入口的目的是「锁屏可见」，
-     * 需要 PUBLIC。系统在锁屏上取「渠道可见性」与「通知自身可见性」中
-     * **更严格**的一方，故复用监听渠道会被降级为 PRIVATE 而达不到需求。
+     * 与 [CHANNEL_MONITOR] 保持分开（v2 后两者锁屏可见性同为 PUBLIC）：
+     * 语义分组不同（待命入口 vs 录音控制），用户可在系统设置里分别关停；
+     * 且分开可避免下次再调整其中一方可见性时牵连另一方的历史渠道状态。
+     * 系统在锁屏上取「渠道可见性」与「通知自身可见性」中**更严格**的一方。
      */
     const val CHANNEL_QUICK_RECORD = "channel_quick_record"
 

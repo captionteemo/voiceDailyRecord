@@ -25,8 +25,9 @@ import javax.inject.Singleton
  * 通知构建与发送（架构 2.3/7.5）。
  *
  * 四类通知：
- * 1. [buildMonitorNotification] 常驻监听通知（channel_monitor，LOW，ongoing 不可滑掉，FR-013）：
- *    含「正在录音」文案 + 隐私提示 + 打点（RemoteInput 备注）/结束快捷操作；
+ * 1. [buildMonitorNotification] 常驻监听通知（channel_monitor_v2，LOW，ongoing 不可滑掉，FR-013）：
+ *    含「正在录音」文案 + 隐私提示 + 打点（RemoteInput 备注）/暂停或继续（手动模式为
+ *    录音开关）/结束快捷操作；锁屏可见（PUBLIC，锁屏一键操作的前提）；
  * 2. [buildQuickRecordNotification] 待命态快捷录音通知（channel_quick_record，LOW，
  *    ongoing + 锁屏可见）：未录音时的一键入口，只有「开始录音」一个操作；
  * 3. [buildProgressNotification] 结算/下载进度通知（channel_progress，LOW）；
@@ -91,6 +92,10 @@ class NotificationHelper @Inject constructor(
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            // 用户需求：锁屏界面一键操作（暂停/打点/结束）。
+            // 锁屏上系统取「渠道可见性」与「通知可见性」中更严格的一方，
+            // 渠道（v2 已 PUBLIC）与通知两侧都必须显式 PUBLIC，缺一侧 action 就被隐藏。
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openMainActivityIntent(dayId))
             .addAction(buildMarkerAction(dayId))
         // 用户需求 4：手动模式用「开始/停止录音」替换「暂停/继续」

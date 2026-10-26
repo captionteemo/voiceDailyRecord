@@ -142,10 +142,69 @@ class QuickRecordNotificationTest {
         assertEquals(Constants.CHANNEL_QUICK_RECORD, quick.channelId)
         assertEquals(Constants.CHANNEL_MONITOR, monitor.channelId)
         assertNotEquals(
-            "两条通知必须落在不同渠道：监听渠道锁屏可见性为 PRIVATE，" +
-                "混用会让快捷入口在锁屏上被降级到看不见",
+            "两条通知必须落在不同渠道：语义分组不同（录音控制 vs 待命入口），" +
+                "混用后任一方调整锁屏可见性都会牵连另一方",
             monitor.channelId,
             quick.channelId,
+        )
+    }
+
+    /**
+     * 用户需求「锁屏界面一键操作」的**通知侧契约**：监听通知本体必须 PUBLIC，
+     * 且控制条按钮齐全。
+     *
+     * 渠道可见性由 `QuickRecordServiceInstrumentationTest.t01` 从系统读回钉住
+     * （MIUI 会把渠道可见性归一化为 UNSPECIFIED，故那边断言「不得更严格」）；
+     * 通知本体的 `setVisibility` 是我们自己的字段，可确定性断言字面值。
+     * 系统取两者中更严格的一方，两侧都钉才完整。
+     */
+    @Test
+    fun `监听通知锁屏可见且控制条为打点暂停结束`() {
+        val monitor = helper.buildMonitorNotification(
+            dayId = DAY_ID,
+            serviceState = RecordingServiceState.MONITORING,
+            monitoredMs = 0L,
+            currentSegmentMs = 0L,
+            segmentCount = 0,
+            markerCount = 0,
+            privacyMode = PrivacyMode.PERSONAL,
+        )
+
+        assertEquals(
+            "锁屏一键操作的前提：通知自身必须 PUBLIC，否则锁屏上只显示脱敏版、按钮全隐藏",
+            Notification.VISIBILITY_PUBLIC,
+            monitor.visibility,
+        )
+        assertEquals(
+            "监听/录音态控制条 = 打点 + 暂停 + 结束（下拉与锁屏上的三个一键操作）",
+            3,
+            monitor.actions?.size,
+        )
+    }
+
+    @Test
+    fun `暂停态控制条为打点继续结束`() {
+        val paused = helper.buildMonitorNotification(
+            dayId = DAY_ID,
+            serviceState = RecordingServiceState.PAUSED,
+            monitoredMs = 0L,
+            currentSegmentMs = 0L,
+            segmentCount = 0,
+            markerCount = 0,
+            privacyMode = PrivacyMode.PERSONAL,
+        )
+
+        assertEquals(
+            "暂停态仍须锁屏可见（用户在锁屏上点「继续」是核心场景）",
+            Notification.VISIBILITY_PUBLIC,
+            paused.visibility,
+        )
+        val actions = paused.actions
+        assertEquals("暂停态控制条 = 打点 + 继续 + 结束", 3, actions?.size)
+        assertEquals(
+            "暂停态第二个操作必须是「继续」（用户需求 2 的锁屏一键继续）",
+            appContext.getString(R.string.notify_action_resume),
+            actions?.get(1)?.title?.toString(),
         )
     }
 

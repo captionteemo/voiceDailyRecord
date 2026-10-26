@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.echolog.app.core.common.Constants
+import com.echolog.app.core.util.EchoLog
 import com.echolog.app.work.WorkScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -84,6 +85,16 @@ class EchoLogApplication : Application(), Configuration.Provider {
     private fun createNotificationChannels() {
         val notificationManager = getSystemService(NotificationManager::class.java) ?: return
 
+        // v1 监听渠道（lockscreenVisibility=PRIVATE）残留清理：
+        // 渠道可见性创建后系统不允许更新，v2 换 id 重建后，v1 会永远留在
+        // 系统设置里干扰用户——必须显式删掉。删除不存在的渠道是 no-op，幂等安全。
+        runCatching { notificationManager.deleteNotificationChannel(Constants.CHANNEL_MONITOR_LEGACY) }
+            .onFailure { EchoLog.w("EchoLogApplication", "清理 v1 监听渠道失败（忽略）", it) }
+
+        // 用户需求：锁屏界面一键操作（暂停/打点/结束）。
+        // 必须是 PUBLIC：系统在锁屏上取「渠道可见性」与「通知可见性」中更严格的一方，
+        // PRIVATE/UNSPECIFIED 之下锁屏只显示脱敏版本、action 全部隐藏。
+        // 隐私权衡见 Constants.CHANNEL_MONITOR 的 KDoc。
         val monitorChannel = NotificationChannel(
             Constants.CHANNEL_MONITOR,
             getString(R.string.channel_monitor_name),
@@ -91,7 +102,7 @@ class EchoLogApplication : Application(), Configuration.Provider {
         ).apply {
             description = getString(R.string.channel_monitor_desc)
             setShowBadge(false)
-            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         val progressChannel = NotificationChannel(
@@ -113,9 +124,10 @@ class EchoLogApplication : Application(), Configuration.Provider {
         }
 
         // 快捷录音入口（用户需求：锁屏/状态栏一键开始录音）。
-        // 与监听渠道分开的**唯一理由**是锁屏可见性：监听渠道刻意设为 PRIVATE
-        // （录音状态属隐私），而快捷入口的价值就在于锁屏上可见可点——
-        // 系统取「渠道可见性」与「通知可见性」中更严格的一方，故必须独立成渠道。
+        // 与监听渠道分开的理由：语义分组不同（待命入口 vs 录音控制），
+        // 用户可在系统设置里分别关停；且锁屏可见性未来若要单方调整，
+        // 不会牵连另一方的已建渠道状态（渠道创建后可见性不可更新）。
+        // v2 起两者锁屏可见性同为 PUBLIC（监听渠道 PUBLIC 是锁屏一键操作的前提）。
         val quickRecordChannel = NotificationChannel(
             Constants.CHANNEL_QUICK_RECORD,
             getString(R.string.channel_quick_record_name),

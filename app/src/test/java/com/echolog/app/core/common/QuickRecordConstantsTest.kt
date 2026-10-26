@@ -12,10 +12,15 @@ import org.junit.Test
  *
  * [Constants] 是跨层通信的唯一字符串来源，而快捷入口依赖两个**极易被合并**的约定：
  *
- * - **渠道必须独立**：监听渠道 [Constants.CHANNEL_MONITOR] 的锁屏可见性是 PRIVATE
- *   （录音状态属隐私），而系统在锁屏上取「渠道可见性」与「通知可见性」中**更严格**
- *   的一方。一旦有人把 [Constants.CHANNEL_QUICK_RECORD] 合并成监听渠道，
+ * - **渠道必须独立**：监听渠道 [Constants.CHANNEL_MONITOR] 与快捷渠道语义分组不同
+ *   （录音控制 vs 待命入口），且系统在锁屏上取「渠道可见性」与「通知可见性」中
+ *   **更严格**的一方。一旦有人把 [Constants.CHANNEL_QUICK_RECORD] 合并成监听渠道，
  *   锁屏入口不会报错、只是**静默消失**——正是本项目红线禁止的静默失效。
+ * - **监听渠道必须是 v2 id**：v1（`channel_monitor`）锁屏可见性为 PRIVATE，
+ *   锁屏上 action 全部隐藏（锁屏一键操作落空）；而渠道可见性创建后不可更新，
+ *   只能换 id 重建。v2 起 id 为 `channel_monitor_v2` 且锁屏可见性 PUBLIC。
+ *   应用启动时会 `deleteNotificationChannel(CHANNEL_MONITOR_LEGACY)` 清理 v1
+ *   ——因此 **v2 id 与 LEGACY id 绝不能相等**，否则清理会删掉正在使用的渠道。
  * - **动作必须互异**：[Constants.ACTION_QUICK_START]（点入口 → 建档录音）、
  *   [Constants.ACTION_STANDBY]（只建入口）、[Constants.ACTION_MANUAL_TOGGLE]
  *   （手动模式下翻转「正在录」标志）语义完全不同；重名会让通知按钮投递到
@@ -45,7 +50,8 @@ class QuickRecordConstantsTest {
 
         assertEquals("渠道 id 必须全局唯一（重名会让通知静默走错渠道）", channels.size, channels.toSet().size)
         assertNotEquals(
-            "快捷入口必须独立渠道：复用监听渠道会被其 PRIVATE 锁屏可见性降级，入口在锁屏上静默消失",
+            "快捷入口必须独立渠道：语义分组不同（录音控制 vs 待命入口），" +
+                "合并后任一方调整锁屏可见性都会牵连另一方",
             Constants.CHANNEL_MONITOR,
             Constants.CHANNEL_QUICK_RECORD,
         )
@@ -53,6 +59,23 @@ class QuickRecordConstantsTest {
             "快捷入口渠道不得与失败提示渠道合并（入口 LOW 常驻 / 失败 HIGH 提醒，语义相反）",
             Constants.CHANNEL_ALERT,
             Constants.CHANNEL_QUICK_RECORD,
+        )
+    }
+
+    @Test
+    fun `监听渠道必须是v2且与遗留渠道id不同`() {
+        assertEquals(
+            "监听渠道必须是 v2 id（channel_monitor_v2）：v1 的 PRIVATE 锁屏可见性" +
+                "让锁屏一键操作（暂停/打点/结束）全部失效，且渠道可见性创建后不可更新，" +
+                "只能换 id 重建。若有人把 id 改回 v1，锁屏操作会静默失效",
+            "channel_monitor_v2",
+            Constants.CHANNEL_MONITOR,
+        )
+        assertNotEquals(
+            "v2 id 与遗留 id 绝不能相等：应用启动会 deleteNotificationChannel(LEGACY)，" +
+                "相等等于删掉正在使用的渠道，常驻通知直接消失",
+            Constants.CHANNEL_MONITOR_LEGACY,
+            Constants.CHANNEL_MONITOR,
         )
     }
 

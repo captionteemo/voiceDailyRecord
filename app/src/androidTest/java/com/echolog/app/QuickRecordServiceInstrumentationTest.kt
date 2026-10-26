@@ -156,6 +156,27 @@ class QuickRecordServiceInstrumentationTest {
             NotificationManager.IMPORTANCE_LOW,
             quick.importance,
         )
+        // 用户需求：锁屏界面一键操作（暂停/打点/结束）。
+        //
+        // ## 断言口径：不得比通知更严格，而非字面等于 PUBLIC（真机实测）
+        //
+        // 本机（MIUI）会把应用设置的渠道 lockscreenVisibility **归一化为
+        // UNSPECIFIED(-1000)**——快捷渠道历史上也是如此（见 t02 的边界说明），
+        // 即便创建时写的是 PUBLIC，从系统读回也是 -1000。UNSPECIFIED 的语义是
+        // 「不额外降级，以通知自身可见性为准」，而监听通知本体已显式
+        // setVisibility(PUBLIC)（由 QuickRecordNotificationTest 的
+        // 「监听通知锁屏可见且带完整控制条」钉住），故锁屏操作实际可用。
+        // 断言字面等于 PUBLIC 只会因设备归一化行为而假红。
+        assertNotEquals(
+            "监听渠道不得为 PRIVATE：渠道比通知更严格时，锁屏上暂停/打点/结束按钮全部消失",
+            Notification.VISIBILITY_PRIVATE,
+            monitor.lockscreenVisibility,
+        )
+        assertNotEquals(
+            "监听渠道不得为 SECRET（比 PRIVATE 更严格，锁屏上彻底不可见）",
+            Notification.VISIBILITY_SECRET,
+            monitor.lockscreenVisibility,
+        )
     }
 
     /**
@@ -396,6 +417,25 @@ class QuickRecordServiceInstrumentationTest {
         runCatching {
             context.stopService(Intent(context, RecordingService::class.java))
         }
+        // 等 AMS 侧完成服务拆毁再进行下一次 start。
+        //
+        // ## 为什么不能省（真机实测的崩溃：ForegroundServiceDidNotStartInTime）
+        //
+        // 1001 通知消失只说明「应用侧撤了通知」，AMS 侧的拆毁（bringDown）还在
+        // 异步进行。真机日志实测：拆毁期间再投 startForegroundService 会出现
+        // `Bringing down service while still waiting for start foreground`，
+        // 且息屏后台时系统可能**静默拒绝** `Service.startForeground()`（不抛异常、
+        // 应用无法感知），随后按 ANSS 时限抛 ForegroundServiceDidNotStartInTimeException
+        // ⇒ 进程崩溃。
+        //
+        // 这是**测试独有的锤击模式**：生产中不存在「stopService 后 250ms 内又
+        // startForegroundService」的路径——待命/恢复都来自前台 Activity、通知点击
+        // （用户交互豁免）或开机广播（系统豁免），且之间隔着人的操作。
+        // 生产等价物（快速 关闭再打开 快捷入口开关）发生在前台 Activity 里，
+        // 前台 startForeground 不会被 bg restriction 拒绝。
+        // 故这里用固定等待把测试从「竞态窗口内」挪出来，而不是在产品里为
+        // 测试行为打补丁。
+        Thread.sleep(1_200L)
     }
 
     private fun standbyIntent(): Intent =
