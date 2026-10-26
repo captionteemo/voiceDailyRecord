@@ -730,12 +730,22 @@ class RecordingService : Service() {
      * 故只陈述能确定的事：权限可能已失效 ⇒ 通知无法更新，
      * 录音状态以应用内显示为准。
      *
-     * ## 为什么与 [handleMonitorNotificationFailure] 不合并成一个方法
+     * ## 为什么本方法是**唯一的发送出口**（但两个入口各自保留限流语义）
      *
-     * 两者的**限流语义不同**：[handleMonitorNotificationFailure] 走
-     * 「一段连续失败只提示一次」的限流（[monitorNotificationFailureNotified]，
-     * 成功后复位）；而本方法对应的是**一次性的状态转换事件**
-     * （冷启动换入监听通知失败），不该与周期刷新的限流标志互相干扰。
+     * 两条失败路径（[handleStart] 的「换入监听通知失败」与
+     * [handleMonitorNotificationFailure] 的「周期刷新失败」）**共用本方法**发送，
+     * 而不是各自写一遍 `notificationHelper.notify(...)`：
+     * 分叉的发送逻辑意味着「改文案必漏一处」——而这正是 BUG-13 的成因
+     * （同一个失败原因在不同分支给出了两套说法）。
+     *
+     * 但**限流不合并**，因为两者的事件性质不同：
+     * - [handleMonitorNotificationFailure] 走「一段连续失败只提示一次」的限流
+     *   （[monitorNotificationFailureNotified]，成功一次后复位）——
+     *   周期刷新每秒失败一次，不限流会把用户刷屏；
+     * - [handleStart] 的调用点是**一次性的状态转换事件**（冷启动换入监听通知失败），
+     *   它不经过周期刷新的限流标志 ⇒ 每次发生都该让用户看到。
+     *
+     * 即：**发送逻辑一份（避免文案分叉），限流逻辑各按事件性质（避免漏报或刷屏）**。
      *
      * ## 走独立 id [Constants.NOTIFICATION_ID_ALERT]（与常驻通知 1001 不同）
      *
