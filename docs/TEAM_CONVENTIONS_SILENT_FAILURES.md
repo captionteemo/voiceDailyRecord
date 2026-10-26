@@ -607,3 +607,43 @@ StackOverflow 的高票答案不等于当前行为。
       吗？服务侧 `isForeground=true` 且 `types!=0` 吗？（铁律 12，两条都要查）
 - [ ] **新增了一条状态恢复路径吗？** 它的最终态与其他路径一致吗？
       判据用的是持久化状态还是内存态？（铁律 13）
+
+---
+
+## 附：真机调试受阻时的可用手段（小米 ROM 实测）
+
+某些设备 ROM 会封掉标准调试通道。**逐个试过**的结果与替代方案：
+
+| 手段 | 结果 | 替代方案 |
+|---|---|---|
+| `adb shell input tap X Y` | ❌ `SecurityException: ... INJECT_EVENTS` | 用 **instrumentation** 里的 `UiDevice.click()`（见下） |
+| `adb shell input keyevent` | ❌ 同样 INJECT_EVENTS | **副作用仍有效**：`KEYCODE_WAKEUP` 会真的把屏幕点亮（异常发生在注入阶段，唤醒已生效） |
+| `adb shell settings put` | ❌ WRITE_SETTINGS | 用 `uiautomator dump` 读实际 UI 状态代替 |
+| `adb shell pm grant` | ❌ 被拒 | 改用「已授权」的真实设备状态做验证 |
+| `adb shell monkey -p <pkg> --pct-touch 100 -v 1` | ✅ 可注入事件 | 但**无法指定坐标** ⇒ 不适合精确点击 |
+| `adb shell uiautomator dump /sdcard/ui.xml` | ✅ 能拿精确坐标 | 需先唤醒屏幕（见下） |
+| `adb shell run-as <pkg> sqlite3` | ❌ 无 sqlite3 二进制 | 拉 db+wal+shm 到本地用 Python 读（**WAL 未合并时表不可见**，需 `PRAGMA wal_checkpoint`） |
+| **instrumentation 进程** | ✅ **持有 INJECT_EVENTS** | 在 androidTest 里用 `UiDevice.click()` 精确点击 —— 这是绕过限制的正规路径 |
+
+### 两个必须记住的坑
+
+1. **`uiautomator dump` 在息屏/锁屏时返回**
+   `ERROR: null root node returned by UiTestAutomationBridge`。
+   ⇒ **先唤醒再 dump**：`adb shell input keyevent KEYCODE_WAKEUP`（抛异常但有效）
+   + `adb shell svc power stayon true`。
+   **这常常就是 instrumentation 挂死的真正根因**（不只是「等不到 RESUMED」）。
+
+2. **Git Bash（MSYS）会改写 `/sdcard/` 这类路径** ⇒
+   `adb pull /sdcard/ui.xml` 会变成 `D:/Program Files/.../sdcard/ui.xml` 而失败。
+   解法：`export MSYS_NO_PATHCONV=1`。
+   同理，Python 读 Git Bash 的 `/tmp` 路径会失败 ⇒ **一律用 Windows 绝对路径**
+   （`C:/Users/.../`）。
+
+### 造「应用内状态」的优先顺序
+
+1. **instrumentation + `UiDevice`**（最可靠）：能点真实 UI，产生真实状态；
+2. `uiautomator dump` 读坐标 + 人工确认（只能读，不能点）；
+3. 直接改 DB（**最后手段**：会绕过应用自身的状态机，测出来的不是真实链路）。
+
+**注意**：用 `pm clear` 清数据会连带清掉 `models_ready` 等持久标记
+（本项目要重下 1.1GB）⇒ **能用 UI 造状态就别清数据**。

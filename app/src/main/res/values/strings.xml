@@ -53,6 +53,18 @@
     <string name="notify_recovery_text">点击恢复后台录音监听</string>
     <string name="notify_action_resume">恢复记录</string>
 
+    <!-- 常驻通知刷新失败（铁律 12 的失败可见化） -->
+    <!--
+      为什么不能复用 notify_recovery_title（「记录已中断」）：
+      那条文案断言的是「录音确实中断了」，用于真正的中断恢复场景（BootReceiver）。
+      而本场景的触发条件只是「startForeground 被系统拒绝」（通常是麦克风权限被撤销），
+      **此时音频循环可能仍在跑、录音可能仍在继续** —— 断言一个用户看不到的
+      「已中断」是**说假话**，正是 BUG-13（「可能为错误页」实为权限问题）的教训。
+      故此处只陈述**真正发生的事**：权限可能失效 ⇒ 通知无法更新。
+    -->
+    <string name="notify_monitor_refresh_failed_title">麦克风权限可能已失效</string>
+    <string name="notify_monitor_refresh_failed_text">常驻通知无法更新，录音状态请以应用内显示为准。点击可重新尝试。</string>
+
     <!-- Worker 结算阶段（channel_progress 通知标题） -->
     <string name="worker_stage_prepare">准备结算</string>
     <string name="worker_stage_merge">正在合并音频</string>
