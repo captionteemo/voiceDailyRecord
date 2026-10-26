@@ -85,6 +85,35 @@ class ModelManager @Inject constructor(
     )
     val errorEvents: SharedFlow<String> = _errorEvents
 
+    /**
+     * 各模型**最近一次重试**的信息（kind → 重试快照）。
+     *
+     * ## 为什么是状态而不是只有事件
+     *
+     * [retryEvents] 是 `replay = 0` 的一次性事件流，**只在订阅期间收得到**；
+     * 而下载跑在应用级作用域里，用户打开模型页时重试可能早就发生过了
+     * （最常见的场景：开机自动下载 → 网络抖动重试 → 用户十分钟后才打开页面）。
+     * 只靠事件流，页面会**看不到任何重试提示**，用户只对着不动的进度条干等
+     * ——这正是「网络不稳定，请重试」提示要解决的问题。
+     *
+     * 因此这里用 StateFlow 保存「最近一次重试」：页面一打开即可见，
+     * 且与 [lastErrors] 一样是**持久可查**的。
+     *
+     * 生命周期：新一轮下载开始时清空（避免上一轮的 attempt 序号误导），
+     * 下载期间由重试回调写入；**下载结束（成功或失败）后不清空**，
+     * 但 UI 只在模型状态为 [ModelState.DOWNLOADING] 时展示它
+     * （见 [ModelUiState] 的组合逻辑），因此不会与失败原因提示重复。
+     */
+    private val _retryStates =
+        MutableStateFlow<Map<ModelKind, ModelDownloader.DownloadRetryInfo>>(emptyMap())
+    val retryStates: StateFlow<Map<ModelKind, ModelDownloader.DownloadRetryInfo>> =
+        _retryStates.asStateFlow()
+
+    /** 清掉某模型的重试提示（新一轮下载开始时调用）。 */
+    private fun clearRetry(kind: ModelKind) {
+        _retryStates.update { it - kind }
+    }
+
     init {
         refreshStates()
     }
@@ -143,8 +172,10 @@ class ModelManager @Inject constructor(
                 }
                 // 2) 缺失/损坏 → 从 ModelScope 下载（伴随文件如 tokens.txt 同步下载）
                 publishState(entry.kind, ModelState.DOWNLOADING)
-                // 新的尝试开始 → 清掉上一轮的失败原因，避免旧原因与新状态并存误导用户
+                // 新的尝试开始 → 清掉上一轮的失败原因与重试提示，
+                // 避免旧原因/旧的 attempt 序号与新状态并存误导用户
                 clearError(entry.kind)
+                clearRetry(entry.kind)
                 EchoLog.i(TAG, "开始确保模型就绪 kind=${entry.kind} 目录=${targetDir.absolutePath}")
                 val result = downloader.download(
                     entry = entry,
@@ -162,6 +193,8 @@ class ModelManager @Inject constructor(
                             "模型下载重试 kind=${entry.kind} 第 ${retryInfo.attempt}/${retryInfo.maxAttempts} 次 " +
                                 "已落盘=${retryInfo.downloadedBytes} 原因=${retryInfo.reason}",
                         )
+                        // 双通道：状态（页面后开也能看到）+ 事件（当下即时提示）
+                        _retryStates.update { it + (entry.kind to retryInfo) }
                         _retryEvents.tryEmit(entry.kind to retryInfo)
                     },
                 )

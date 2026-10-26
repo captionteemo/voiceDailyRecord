@@ -29,6 +29,16 @@ import javax.inject.Singleton
  * 是否走了续传、实际落盘字节数全部不可见，失败原因只存在于返回值里，而上层
  * [ModelManager] 曾把它直接丢弃。现所有失败返回点与关键节点都有日志，
  * 且失败原因会经 [ModelManager.lastErrors] 透传到界面。
+ *
+ * ## 大文件下载的三条硬约束（改本文件前请读完）
+ *
+ * 1. **必须重试**（[downloadStreamWithRetry]）：单次连接随时可能因网络抖动或
+ *    协议层错误而中断，重试时**从 `.part` 已有字节续传**，不从头再来；
+ * 2. **`.part` 按可恢复性处置**：可恢复失败**保留**（下次续传），
+ *    不可恢复失败（4xx、校验不符、体积异常）**删除**（续传只会续到同样的错误内容）；
+ * 3. **HTTP/1.1**（由 [com.echolog.app.di.AppModule] 的 client 强制）：
+ *    HTTP/2 的流控会在大文件长连接上被 CDN 中止（真机实测 1.1GB 在 581MB 处
+ *    `Software caused connection abort`，堆栈 `Http2Writer.windowUpdate`）。
  */
 @Singleton
 class ModelDownloader @Inject constructor(
@@ -37,13 +47,22 @@ class ModelDownloader @Inject constructor(
 ) {
 
     /**
+     * 重试退避基数（毫秒）；第 n 次重试等待 `retryBackoffBaseMs × 2^(n-1)`。
+     *
+     * **仅供单元测试调小**：退避是真实等待，单测里等 1s+2s 会拖慢整个套件，
+     * 故开放为可覆盖的内部属性（生产恒为 [RETRY_BACKOFF_BASE_MS]）。
+     */
+    internal var retryBackoffBaseMs: Long = RETRY_BACKOFF_BASE_MS
+
+    /**
      * 下载单个模型条目到目标目录。
      *
      * @param entry 模型条目。
      * @param targetDir 目标目录（`models/asr/` 或 `models/llm/`）。
      * @param onProgress 进度回调（0~100，按 [ModelEntry.sizeBytes] 估算）。
-     * @param onRetry 可恢复失败后的**重试通知**回调（供上层提示「网络不稳定，正在重试」）。
-     * @return 成功时携带已下载的主文件；失败携带错误码。
+     * @param onRetry 「即将重试」回调（见 [DownloadRetryInfo]），供上层提示
+     *   「网络不稳定，正在重试」，不让用户对着不动的进度条干等。
+     * @return 成功时携带已下载的主文件；失败携带错误码与**真实原因**。
      */
     suspend fun download(
         entry: ModelEntry,
@@ -67,17 +86,24 @@ class ModelDownloader @Inject constructor(
                 // 而中断（真机实测：1.1GB 在 HTTP/2 下于 581MB 处被中止，
                 // 堆栈 okhttp3.internal.http2.Http2Writer.windowUpdate）。
                 // 每次重试都从 .part 已有字节续传，不从头再来。
-                val mainOutcome = downloadMainFileWithRetry(entry, partFile, onProgress, onRetry)
-                val downloadedBytes = mainOutcome.bytes
-                val mainFailure = mainOutcome.failure
-                if (mainFailure != null) {
-                    // 重试耗尽仍失败：`.part` 已保留（可恢复失败），下次继续续传
+                val outcome = downloadStreamWithRetry(
+                    url = entry.url,
+                    expectedSizeBytes = entry.sizeBytes,
+                    partFile = partFile,
+                    onProgress = onProgress,
+                    onRetry = onRetry,
+                )
+                val failure = outcome.failure
+                if (failure != null) {
+                    // 重试耗尽仍失败：`.part` 的处置已由可恢复性判定决定
+                    // （可恢复 ⇒ 保留供下次续传；不可恢复 ⇒ 已删除）
                     return@withContext EchoResult.failure(
-                        mainFailure.code,
-                        mainFailure.message.ifBlank { "下载失败" },
-                        mainFailure.cause,
+                        failure.code,
+                        failure.message,
+                        failure.cause,
                     )
                 }
+                val downloadedBytes = outcome.bytes
                 EchoLog.i(
                     TAG,
                     "主文件下载结束 kind=${entry.kind} 落盘字节=$downloadedBytes " +
@@ -85,9 +111,10 @@ class ModelDownloader @Inject constructor(
                 )
                 if (downloadedBytes < entry.minSizeBytes) {
                     // 体积过小 = 服务端返回了错误页/HTML 而非二进制内容。
-                    // 这属于**不可恢复**失败：续传无意义（续下去还是同样的错误页），
-                    // 故删除 .part，避免下次继续在错误的字节上续。
-                    partFile.delete()
+                    // 这属于**不可恢复**失败：流已完整读完，说明服务端给的确实不是
+                    // 权重本体；此时 `.part` 里装的是错误页内容，续传只会把错误内容
+                    // 接在好数据后面 ⇒ 删除 .part，交给下一次重新下载。
+                    runCatching { partFile.delete() }
                     val message = "下载文件过小（${FileUtils.formatBytes(downloadedBytes)}），可能为错误页"
                     EchoLog.e(
                         TAG,
@@ -102,7 +129,8 @@ class ModelDownloader @Inject constructor(
                 if (entry.sha256.isNotBlank()) {
                     val actual = FileUtils.sha256Hex(partFile)
                     if (!actual.equals(entry.sha256, ignoreCase = true)) {
-                        partFile.delete()
+                        // 校验不符 = 内容已损坏，续传只会续到同样的坏内容 ⇒ 删 .part
+                        runCatching { partFile.delete() }
                         EchoLog.e(
                             TAG,
                             "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_CHECKSUM} " +
@@ -115,7 +143,7 @@ class ModelDownloader @Inject constructor(
                     }
                 }
                 if (!partFile.renameTo(targetFile)) {
-                    partFile.delete()
+                    runCatching { partFile.delete() }
                     EchoLog.e(
                         TAG,
                         "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_DOWNLOAD} " +
@@ -135,7 +163,7 @@ class ModelDownloader @Inject constructor(
                 .filter { File(targetDir, it).let { file -> !file.isFile || file.length() == 0L } }
             if (missingExtras.isNotEmpty()) {
                 EchoLog.i(TAG, "需要下载伴随文件 kind=${entry.kind} 文件=$missingExtras")
-                val extrasResult = downloadAdditionalFiles(entry, targetDir)
+                val extrasResult = downloadAdditionalFiles(entry, targetDir, onRetry)
                 if (extrasResult.isFailure) {
                     val cause = extrasResult.failureOrNull()
                     EchoLog.e(
@@ -172,16 +200,16 @@ class ModelDownloader @Inject constructor(
             EchoLog.w(TAG, "下载被取消 kind=${entry.kind}（保留 .part 以便续传）")
             throw cancellation
         } catch (throwable: Throwable) {
-            // 兜底 catch：这里的异常来自「主文件已就绪跳过」之外的路径
-            // （伴随文件下载、建目录等）。主文件的可恢复失败已在
-            // downloadMainFileWithRetry 内部处理完毕（保留 .part 并重试），
-            // 因此这里只删除 .part —— 主文件此时要么已转正（.part 已不存在，
-            // delete 是 no-op），要么失败原因已在上层判定。
-            runCatching { partFile.delete() }
+            // 兜底 catch：这里的异常来自「建目录 / 校验 / 转正 / 伴随文件」等外围步骤。
+            // 主文件的可恢复失败已在 [downloadStreamWithRetry] 内部处理完毕
+            // （保留 .part 并重试）；此处的失败原因**尚不能判定为不可恢复**
+            // （例如 SHA-256 计算时的 IO 抖动），故**保留 .part**：
+            // 删掉等于把已经下好的几百 MB 作废，下次从零再来。
+            // 真正「内容不可信」的路径（校验不符、转正失败）已各自显式删除 .part。
             val message = "下载失败：${throwable.message ?: "网络错误"}"
             EchoLog.e(
                 TAG,
-                "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_DOWNLOAD} 原因=$message",
+                "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_DOWNLOAD} 原因=$message（保留 .part）",
                 throwable,
             )
             EchoResult.failure(
@@ -193,7 +221,7 @@ class ModelDownloader @Inject constructor(
     }
 
     /**
-     * 下载主文件，失败时按指数退避重试，**每次从 `.part` 已有字节续传**。
+     * 流式下载 + 有限次重试（指数退避），**每次从 `.part` 已有字节续传**。
      *
      * ## 为什么必须有这一层
      *
@@ -208,69 +236,79 @@ class ModelDownloader @Inject constructor(
      * 该开关只覆盖**连接建立失败**与部分 IO 异常，**不覆盖协议层错误**
      * （如 HTTP/2 流控 abort）。所以应用层必须自己做重试。
      *
-     * ## `.part` 的处置
+     * ## `.part` 的处置判据（活 B）
      *
-     * - **可恢复失败**（连接中断/超时/5xx）：**保留 `.part`**，下次 Range 续传；
-     * - **不可恢复失败**（HTTP 4xx、SHA-256 不符、体积异常）：删除 `.part`。
+     * - **可恢复失败**（连接中断/读超时/5xx/429/408）：**保留 `.part`**，
+     *   下次用 `Range` 续传（581MB 已经下好，删掉等于从头再来）；
+     * - **不可恢复失败**（HTTP 4xx、响应体为空）：**删除 `.part`** ——
+     *   换连接/换时间只会得到同样的结果，续传无意义。
      *
-     * 判据见 [isRecoverable]。
+     * 判据见 [isRecoverable]（**按异常类型 + HTTP 状态码判定，不解析 message 文本**）。
+     *
+     * @param expectedSizeBytes 期望总字节数（仅用于进度百分比；未知时传 0）。
      */
-    private suspend fun downloadMainFileWithRetry(
-        entry: ModelEntry,
+    private suspend fun downloadStreamWithRetry(
+        url: String,
+        expectedSizeBytes: Long,
         partFile: File,
         onProgress: (Int) -> Unit,
         onRetry: (DownloadRetryInfo) -> Unit,
-    ): MainDownloadOutcome {
+    ): StreamOutcome {
         var lastFailure: EchoResult.Failure? = null
         for (attempt in 1..MAX_DOWNLOAD_ATTEMPTS) {
             try {
-                val bytes = streamDownload(entry.url, entry.sizeBytes, partFile, onProgress)
-                return MainDownloadOutcome(bytes = bytes, failure = null)
+                val bytes = streamDownload(url, expectedSizeBytes, partFile, onProgress)
+                return StreamOutcome(bytes = bytes, failure = null)
             } catch (cancellation: CancellationException) {
+                // 取消不是失败，原样抛出（项目约定：不得吞取消）
                 throw cancellation
             } catch (throwable: Throwable) {
                 val recoverable = isRecoverable(throwable)
-                val message = throwable.message ?: "网络错误"
+                val reason = throwable.message ?: "网络错误"
                 EchoLog.w(
                     TAG,
-                    "主文件下载中断 kind=${entry.kind} 第 $attempt/$MAX_DOWNLOAD_ATTEMPTS 次 " +
-                        "已落盘=${partFile.length()} 可恢复=$recoverable 原因=$message",
+                    "下载中断 url=$url 第 $attempt/$MAX_DOWNLOAD_ATTEMPTS 次 " +
+                        "已落盘=${partFile.length()} 可恢复=$recoverable 原因=$reason",
                     throwable,
                 )
                 if (!recoverable) {
                     // 不可恢复：删掉 .part（续传只会续到同样的错误内容）
                     runCatching { partFile.delete() }
-                    return MainDownloadOutcome(
+                    return StreamOutcome(
                         bytes = 0L,
                         failure = EchoResult.Failure(
                             code = Constants.ERROR_MODEL_DOWNLOAD,
-                            message = "下载失败：$message",
+                            message = "下载失败：$reason",
                             cause = throwable,
                         ),
                     )
                 }
                 lastFailure = EchoResult.Failure(
                     code = Constants.ERROR_MODEL_DOWNLOAD,
-                    message = "下载失败：$message",
+                    message = reason,
                     cause = throwable,
                 )
                 if (attempt < MAX_DOWNLOAD_ATTEMPTS) {
-                    // 指数退避：1s / 2s（最多 3 次尝试）
-                    val backoffMs = RETRY_BACKOFF_BASE_MS * (1L shl (attempt - 1))
-                    EchoLog.i(TAG, "第 $attempt 次失败，退避 ${backoffMs}ms 后重试（保留 .part 续传）")
-                    // 通知上层「正在重试」，让 UI 提示用户而非干等
+                    // 指数退避：1s / 2s（首发 1 次 + 重试 2 次 = 共 3 次尝试）
+                    val backoffMs = retryBackoffBaseMs * (1L shl (attempt - 1))
+                    EchoLog.i(
+                        TAG,
+                        "第 $attempt 次失败，退避 ${backoffMs}ms 后重试" +
+                            "（保留 .part，将从 ${partFile.length()} 字节处续传）",
+                    )
+                    // 通知上层「正在重试」，让 UI 提示用户而不是干等。
+                    // 回调异常**不得**影响下载主链路（铁律 5：旁支动作不得中断主链路）。
                     runCatching {
                         onRetry(
                             DownloadRetryInfo(
                                 attempt = attempt,
                                 maxAttempts = MAX_DOWNLOAD_ATTEMPTS,
                                 downloadedBytes = partFile.length(),
-                                reason = message,
+                                reason = reason,
                             ),
                         )
-                    }.onFailure { throwable ->
-                        // 通知失败不得影响下载主链路
-                        EchoLog.w(TAG, "重试通知回调异常（不影响下载）", throwable)
+                    }.onFailure { callbackError ->
+                        EchoLog.w(TAG, "重试通知回调异常（不影响下载）", callbackError)
                     }
                     delay(backoffMs)
                 }
@@ -278,14 +316,20 @@ class ModelDownloader @Inject constructor(
         }
         EchoLog.e(
             TAG,
-            "主文件下载重试耗尽 kind=${entry.kind} 已落盘=${partFile.length()} " +
+            "下载重试耗尽 url=$url 已落盘=${partFile.length()}" +
                 "（保留 .part，下次继续续传）",
         )
-        return MainDownloadOutcome(
+        val last = lastFailure ?: EchoResult.Failure(
+            code = Constants.ERROR_MODEL_DOWNLOAD,
+            message = "网络错误",
+        )
+        return StreamOutcome(
             bytes = partFile.length(),
-            failure = lastFailure ?: EchoResult.Failure(
-                code = Constants.ERROR_MODEL_DOWNLOAD,
-                message = "下载失败：重试 $MAX_DOWNLOAD_ATTEMPTS 次后仍失败",
+            failure = EchoResult.Failure(
+                code = last.code,
+                // 失败原因必须包含**最后一次的真实原因**，不能只说「重试失败」
+                message = "下载失败（已重试 ${MAX_DOWNLOAD_ATTEMPTS - 1} 次）：${last.message}",
+                cause = last.cause,
             ),
         )
     }
@@ -293,44 +337,30 @@ class ModelDownloader @Inject constructor(
     /**
      * 判断失败是否**可恢复**（值得保留 `.part` 并重试）。
      *
-     * 可恢复：连接中断、读超时、5xx、429 —— 都是「换个时间/换个连接可能成功」。
-     * 不可恢复：HTTP 4xx（除 429）、响应体为空 —— 重试只会得到同样的结果。
+     * ## 判据（按异常**类型**与 HTTP 状态码，**不解析 message 文本**）
+     *
+     * - **HTTP 状态码**（[HttpStatusException] 携带真实状态码）：
+     *   5xx / 429 / 408 是「服务端暂时不行」，换个连接或换个时间可能成功 ⇒ 可恢复；
+     *   其余 4xx（如 404）是「这个 URL 就是没有这份资源」，重试只会得到同样的
+     *   结果 ⇒ 不可恢复；
+     * - **其它 IO 异常**（`SocketException: Software caused connection abort`、
+     *   `SocketTimeoutException`、`ProtocolException: unexpected end of stream` …）
+     *   都是连接/协议层的**瞬时**故障 ⇒ 可恢复；
+     * - **非 IO 异常** ⇒ 不可恢复（重试同样会失败）。
+     *
+     * **为什么不用「正则匹配 message」**：message 文本由第三方库产生，
+     * 换个 OkHttp 版本就可能变形（例如把 `HTTP 429` 写成 `HTTP 429 Too Many Requests`），
+     * 判据随之失效；而且正则很容易把 `HTTP 429` 误判成不可恢复
+     * （`Regex("HTTP 4(\\d{2})")` 只会捕获到 `42`）。抛**携带状态码的异常**
+     * 才能让判据与文本解耦。
      */
-    private fun isRecoverable(throwable: Throwable): Boolean {
-        val message = throwable.message.orEmpty()
-        // 4xx（除 429）视为不可恢复
-        val clientError = Regex("HTTP 4(\\d{2})").find(message)?.groupValues?.get(1)?.toIntOrNull()
-        if (clientError != null && clientError != 429) return false
-        if (message.contains("HTTP 4") && !message.contains("HTTP 429")) return false
-        if (message.contains("响应体为空")) return false
-        // 其余（SocketException / SocketTimeoutException / 5xx / 未知 IO 异常）均可恢复
-        return true
+    private fun isRecoverable(throwable: Throwable): Boolean = when (throwable) {
+        is HttpStatusException -> throwable.code >= 500 ||
+            throwable.code == HTTP_TOO_MANY_REQUESTS ||
+            throwable.code == HTTP_REQUEST_TIMEOUT
+        is IOException -> true
+        else -> false
     }
-
-    /**
-     * 主文件下载结果。[bytes] 为已落盘字节数（失败时为 `.part` 当前大小）。
-     *
-     * @param failure 非空表示最终失败；此时 `.part` 的处置已由 [downloadMainFileWithRetry] 决定。
-     */
-    private data class MainDownloadOutcome(
-        val bytes: Long,
-        val failure: EchoResult.Failure?,
-    )
-
-    /**
-     * 可恢复失败后的**重试通知**（供上层提示用户「网络不稳定，正在重试」）。
-     *
-     * @param attempt 本次是第几次尝试（从 1 开始）。
-     * @param maxAttempts 总尝试次数上限。
-     * @param downloadedBytes 已落盘字节数（重试时会从该处续传）。
-     * @param reason 本次失败的真实原因。
-     */
-    data class DownloadRetryInfo(
-        val attempt: Int,
-        val maxAttempts: Int,
-        val downloadedBytes: Long,
-        val reason: String,
-    )
 
     /**
      * 下载伴随文件（如 ASR 的 `tokens.txt`，FR-012）。
@@ -339,11 +369,15 @@ class ModelDownloader @Inject constructor(
      * 将主 URL 中主文件名替换为伴随文件名（内置清单的镜像布局满足该约定；
      * 远端 manifest 若采用异目录布局，需在条目中扩展 URL 字段）。
      *
+     * 与主文件走**同一套**重试与 `.part` 处置策略（可恢复 ⇒ 保留 `.part` 续传）。
+     *
+     * @param onRetry 重试通知回调（与主文件同一套语义）。
      * @return 成功时携带已就绪的伴随文件列表；失败携带错误码。
      */
     suspend fun downloadAdditionalFiles(
         entry: ModelEntry,
         targetDir: File,
+        onRetry: (DownloadRetryInfo) -> Unit = {},
     ): EchoResult<List<File>> = withContext(ioDispatcher) {
         val ready = mutableListOf<File>()
         for (name in entry.additionalFiles) {
@@ -364,46 +398,46 @@ class ModelDownloader @Inject constructor(
                         "无法推导伴随文件「$name」的下载地址（主 URL 不含主文件名）",
                     )
                 }
-            try {
-                FileUtils.ensureDirectory(targetDir)
-                val partFile = File(targetDir, "$name.part")
-                val downloadedBytes = streamDownload(url, entry.sizeBytes, partFile) { }
-                EchoLog.i(
-                    TAG,
-                    "伴随文件下载结束 kind=${entry.kind} 文件=$name 落盘字节=$downloadedBytes",
-                )
-                if (downloadedBytes <= 0L || !partFile.renameTo(targetFile)) {
-                    partFile.delete()
-                    EchoLog.e(
-                        TAG,
-                        "伴随文件下载失败 kind=${entry.kind} 文件=$name " +
-                            "原因=落盘字节=$downloadedBytes 或转正失败（已删除 .part）",
-                    )
-                    return@withContext EchoResult.failure(
-                        Constants.ERROR_MODEL_DOWNLOAD,
-                        "伴随文件「$name」下载失败",
-                    )
-                }
-                ready.add(targetFile)
-            } catch (cancellation: CancellationException) {
-                runCatching { File(targetDir, "$name.part").delete() }
-                EchoLog.w(TAG, "伴随文件下载被取消 kind=${entry.kind} 文件=$name")
-                throw cancellation
-            } catch (throwable: Throwable) {
-                runCatching { File(targetDir, "$name.part").delete() }
-                val message = "伴随文件「$name」下载失败：${throwable.message ?: "网络错误"}"
+            val partFile = File(targetDir, "$name.part")
+            val outcome = downloadStreamWithRetry(
+                url = url,
+                // 伴随文件没有独立体积门槛（清单里只有主文件的真实字节数），
+                // 期望字节未知 ⇒ 传 0 表示不算进度百分比
+                expectedSizeBytes = 0L,
+                partFile = partFile,
+                onProgress = { },
+                onRetry = onRetry,
+            )
+            val failure = outcome.failure
+            if (failure != null) {
                 EchoLog.e(
                     TAG,
                     "伴随文件下载失败 kind=${entry.kind} 文件=$name " +
-                        "code=${Constants.ERROR_MODEL_DOWNLOAD} 原因=$message",
-                    throwable,
+                        "code=${failure.code} 原因=${failure.message}",
                 )
                 return@withContext EchoResult.failure(
                     Constants.ERROR_MODEL_DOWNLOAD,
-                    message,
-                    throwable,
+                    "伴随文件「$name」下载失败：${failure.message}",
+                    failure.cause,
                 )
             }
+            if (outcome.bytes <= 0L || !partFile.renameTo(targetFile)) {
+                runCatching { partFile.delete() }
+                EchoLog.e(
+                    TAG,
+                    "伴随文件下载失败 kind=${entry.kind} 文件=$name " +
+                        "原因=落盘字节=${outcome.bytes} 或转正失败（已删除 .part）",
+                )
+                return@withContext EchoResult.failure(
+                    Constants.ERROR_MODEL_DOWNLOAD,
+                    "伴随文件「$name」下载失败",
+                )
+            }
+            EchoLog.i(
+                TAG,
+                "伴随文件下载完成 kind=${entry.kind} 文件=$name 落盘字节=${outcome.bytes}",
+            )
+            ready.add(targetFile)
         }
         EchoResult.success(ready)
     }
@@ -425,6 +459,10 @@ class ModelDownloader @Inject constructor(
      * 后果链：上层拿到 0 → 判定「文件过小」→ **删掉刚下好的 .part** → 下载
      * 永远无法成功，且用户看到的失败原因是**假的**（"可能为错误页"）。
      * 现在 `totalBytes` 只声明一次（块外），块内只赋值，返回值即真实落盘字节。
+     *
+     * **续传判定依赖 `response.code == 206`**：服务端按 `Range` 返回 206 才追加；
+     * 若忽略 `Range` 返回 200，则必须**截断重写**（否则旧尾部残留，文件长度虚高、
+     * 通过体积门槛但内容是错的）。
      */
     private fun streamDownload(
         url: String,
@@ -452,7 +490,9 @@ class ModelDownloader @Inject constructor(
             )
             if (!response.isSuccessful) {
                 EchoLog.e(TAG, "响应非成功状态 url=$url HTTP=${response.code} ${response.message}")
-                throw IOException("HTTP ${response.code}")
+                // 抛**携带状态码**的异常：让 [isRecoverable] 能按类型 + 状态码判定，
+                // 而不是去正则匹配 message 文本（那会把 429 误判成不可恢复）
+                throw HttpStatusException(response.code)
             }
             val body = response.body ?: throw IOException("响应体为空")
             val append = response.code == PARTIAL_CONTENT && existingBytes > 0L
@@ -495,15 +535,61 @@ class ModelDownloader @Inject constructor(
         return totalBytes
     }
 
+    /**
+     * 服务端返回非成功状态码（携带真实状态码，供 [isRecoverable] 判定可恢复性）。
+     *
+     * 不用「把状态码拼进 message 再用正则匹配」的方式：那既脆弱又难维护
+     * （曾经把 429 误判成不可恢复）。
+     */
+    private class HttpStatusException(val code: Int) : IOException("HTTP $code")
+
+    /**
+     * 一次流式下载尝试的结果。
+     *
+     * @param bytes 已落盘字节数（失败时为 `.part` 当前大小）。
+     * @param failure 非空表示本次尝试失败；`.part` 的处置已由可恢复性判定决定。
+     */
+    private data class StreamOutcome(
+        val bytes: Long,
+        val failure: EchoResult.Failure?,
+    )
+
+    /**
+     * 一次「即将重试」的快照（供上层提示用户，别让用户对着不动的进度条干等）。
+     *
+     * @param attempt 刚刚失败的尝试序号（从 1 开始；1 = 第一次尝试失败）。
+     * @param maxAttempts 总尝试次数上限（含首次）；例如 3 = 首发 1 次 + 重试 2 次。
+     * @param downloadedBytes 失败瞬间**已落盘**的字节数 —— 下一次重试的**续传起点**
+     *   （请求头 `Range: bytes=<downloadedBytes>-`）。重试时**保留 `.part`** 并从此处
+     *   续传，**不从头再来**。
+     * @param reason 本次失败的**真实原因**（如「HTTP 503」「Software caused connection
+     *   abort」），不做归一化、不用占位符。
+     *
+     * 触发时机：**仅在确实还会再试一次时**才回调（即 `attempt < maxAttempts`）。
+     * 最后一次失败不再回调——那时该提示的是「最终失败原因」而不是「正在重试」。
+     */
+    data class DownloadRetryInfo(
+        val attempt: Int,
+        val maxAttempts: Int,
+        val downloadedBytes: Long,
+        val reason: String,
+    )
+
     companion object {
         private const val TAG = "ModelDownloader"
         private const val DOWNLOAD_BUFFER_BYTES = 64 * 1024
         private const val PARTIAL_CONTENT = 206
 
-        /** 主文件下载的最大尝试次数（含首次）。 */
+        /** 主文件下载的最大尝试次数（含首次）：1 次首发 + 2 次重试。 */
         private const val MAX_DOWNLOAD_ATTEMPTS = 3
 
         /** 重试退避基数（毫秒）；第 n 次重试等待 base × 2^(n-1)。 */
         private const val RETRY_BACKOFF_BASE_MS = 1_000L
+
+        /** HTTP 429（Too Many Requests）：限流，可恢复。 */
+        private const val HTTP_TOO_MANY_REQUESTS = 429
+
+        /** HTTP 408（Request Timeout）：超时，可恢复。 */
+        private const val HTTP_REQUEST_TIMEOUT = 408
     }
 }

@@ -84,6 +84,21 @@ fun ModelDownloadScreen(
         viewModel.consumeErrorMessage()
     }
 
+    // 重试提示（即时）：「网络不稳定，正在重试（第 N/M 次）」——
+    // key 必须包含它，否则新的重试不会触发 Snackbar（展示后即消费置空，
+    // 下一次重试的 key 与上一次不同 ⇒ 必然再次触发）。
+    LaunchedEffect(state.retryInfo) {
+        val retryInfo = state.retryInfo ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(
+            context.getString(
+                R.string.model_retry_notice,
+                retryInfo.attempt,
+                retryInfo.maxAttempts,
+            ),
+        )
+        viewModel.consumeRetryInfo()
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -201,6 +216,28 @@ private fun ModelRowCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+            }
+            // 重试提示：行内常驻显示——「网络不稳定，正在重试（第 N/M 次）」。
+            // 来自持久 StateFlow（ModelManager.retryStates），因此**页面后开也可见**
+            // （下载在应用级作用域跑，事件流那时还没人订阅）。
+            // 让用户知道「在重试、不是卡死」，而不是对着不动的进度条干等。
+            row.retry?.let { retry ->
+                Text(
+                    text = stringResource(
+                        R.string.model_retry_notice,
+                        retry.attempt,
+                        retry.maxAttempts,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (retry.reason.isNotBlank()) {
+                    Text(
+                        text = stringResource(R.string.model_retry_reason, retry.reason),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (row.state == ModelState.DOWNLOADING) {
                 LinearProgressIndicator(

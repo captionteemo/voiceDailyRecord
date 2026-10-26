@@ -332,4 +332,8 @@
 
     <!-- 今天页入口（转写全文） -->
     <string name="today_view_transcript">查看转写全文</string>
+
+    <!-- 模型下载重试提示（BUG-13：大文件下载的应用层重试） -->
+    <string name="model_retry_notice">网络不稳定，正在重试（第 %1$d/%2$d 次）</string>
+    <string name="model_retry_reason">最近一次失败原因：%1$s</string>
 </resources>
