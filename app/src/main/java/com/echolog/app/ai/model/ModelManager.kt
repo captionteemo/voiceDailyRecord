@@ -146,11 +146,25 @@ class ModelManager @Inject constructor(
                 // 新的尝试开始 → 清掉上一轮的失败原因，避免旧原因与新状态并存误导用户
                 clearError(entry.kind)
                 EchoLog.i(TAG, "开始确保模型就绪 kind=${entry.kind} 目录=${targetDir.absolutePath}")
-                val result = downloader.download(entry, targetDir) { progress ->
-                    // 下载进度经状态流之外的通道透出（T05 ModelDownloadScreen 可扩展
-                    // 为带进度的状态；当前进度事件保留在下载器回调内）
-                    _downloadProgress.tryEmit(entry.kind to progress)
-                }
+                val result = downloader.download(
+                    entry = entry,
+                    targetDir = targetDir,
+                    onProgress = { progress ->
+                        // 下载进度经状态流之外的通道透出（T05 ModelDownloadScreen 可扩展
+                        // 为带进度的状态；当前进度事件保留在下载器回调内）
+                        _downloadProgress.tryEmit(entry.kind to progress)
+                    },
+                    onRetry = { retryInfo ->
+                        // 可恢复失败后的重试通知：状态**保持 DOWNLOADING**
+                        // （重试是同一次下载内部的事，不能闪回「未在下载」）
+                        EchoLog.w(
+                            TAG,
+                            "模型下载重试 kind=${entry.kind} 第 ${retryInfo.attempt}/${retryInfo.maxAttempts} 次 " +
+                                "已落盘=${retryInfo.downloadedBytes} 原因=${retryInfo.reason}",
+                        )
+                        _retryEvents.tryEmit(entry.kind to retryInfo)
+                    },
+                )
                 if (result.isSuccess) {
                     clearError(entry.kind)
                     publishState(entry.kind, ModelState.READY)
@@ -188,6 +202,20 @@ class ModelManager @Inject constructor(
         extraBufferCapacity = 8,
     )
     val downloadProgress: kotlinx.coroutines.flow.SharedFlow<Pair<ModelKind, Int>> = _downloadProgress
+
+    /**
+     * 重试事件流（kind → 重试信息）。
+     *
+     * 用于让 UI 提示「网络不稳定，正在重试（第 n 次）」——**不让用户干等**。
+     * 重试期间模型状态保持 [ModelState.DOWNLOADING]，不闪回「未在下载」。
+     */
+    private val _retryEvents =
+        kotlinx.coroutines.flow.MutableSharedFlow<Pair<ModelKind, ModelDownloader.DownloadRetryInfo>>(
+            replay = 0,
+            extraBufferCapacity = 8,
+        )
+    val retryEvents: kotlinx.coroutines.flow.SharedFlow<Pair<ModelKind, ModelDownloader.DownloadRetryInfo>> =
+        _retryEvents
 
     private suspend fun publishStates() {
         val states = ModelKind.entries.associateWith { kind -> computeState(kind) }

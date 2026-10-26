@@ -7,6 +7,7 @@ import com.echolog.app.core.util.EchoLog
 import com.echolog.app.core.util.FileUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -41,12 +42,14 @@ class ModelDownloader @Inject constructor(
      * @param entry 模型条目。
      * @param targetDir 目标目录（`models/asr/` 或 `models/llm/`）。
      * @param onProgress 进度回调（0~100，按 [ModelEntry.sizeBytes] 估算）。
+     * @param onRetry 可恢复失败后的**重试通知**回调（供上层提示「网络不稳定，正在重试」）。
      * @return 成功时携带已下载的主文件；失败携带错误码。
      */
     suspend fun download(
         entry: ModelEntry,
         targetDir: File,
         onProgress: (Int) -> Unit = {},
+        onRetry: (DownloadRetryInfo) -> Unit = {},
     ): EchoResult<File> = withContext(ioDispatcher) {
         FileUtils.ensureDirectory(targetDir)
         val targetFile = File(targetDir, entry.fileName)
@@ -60,13 +63,30 @@ class ModelDownloader @Inject constructor(
             // 主文件已就绪（体积达标，下载时已校验过 SHA-256）则跳过重下：
             // 避免伴随文件缺失导致重试时重复下载大文件
             if (!(targetFile.isFile && targetFile.length() >= entry.minSizeBytes)) {
-                val downloadedBytes = streamDownload(entry.url, entry.sizeBytes, partFile, onProgress)
+                // 大文件下载必须自带重试：单次连接随时可能因网络抖动/协议层 abort
+                // 而中断（真机实测：1.1GB 在 HTTP/2 下于 581MB 处被中止，
+                // 堆栈 okhttp3.internal.http2.Http2Writer.windowUpdate）。
+                // 每次重试都从 .part 已有字节续传，不从头再来。
+                val mainOutcome = downloadMainFileWithRetry(entry, partFile, onProgress, onRetry)
+                val downloadedBytes = mainOutcome.bytes
+                val mainFailure = mainOutcome.failure
+                if (mainFailure != null) {
+                    // 重试耗尽仍失败：`.part` 已保留（可恢复失败），下次继续续传
+                    return@withContext EchoResult.failure(
+                        mainFailure.code,
+                        mainFailure.message.ifBlank { "下载失败" },
+                        mainFailure.cause,
+                    )
+                }
                 EchoLog.i(
                     TAG,
                     "主文件下载结束 kind=${entry.kind} 落盘字节=$downloadedBytes " +
                         "门槛=${entry.minSizeBytes} 是否达标=${downloadedBytes >= entry.minSizeBytes}",
                 )
                 if (downloadedBytes < entry.minSizeBytes) {
+                    // 体积过小 = 服务端返回了错误页/HTML 而非二进制内容。
+                    // 这属于**不可恢复**失败：续传无意义（续下去还是同样的错误页），
+                    // 故删除 .part，避免下次继续在错误的字节上续。
                     partFile.delete()
                     val message = "下载文件过小（${FileUtils.formatBytes(downloadedBytes)}），可能为错误页"
                     EchoLog.e(
@@ -147,10 +167,16 @@ class ModelDownloader @Inject constructor(
             EchoResult.success(targetFile)
         } catch (cancellation: CancellationException) {
             // 协程取消**不是失败**：不吞、不转成 failure（项目约定：不得吞取消）。
-            runCatching { partFile.delete() }
-            EchoLog.w(TAG, "下载被取消 kind=${entry.kind}（已删除 .part）")
+            // 取消通常意味着用户主动停止或进程被杀 —— 此时**保留 .part**
+            // （下次可续传）；只有「明确不可恢复」才删除。
+            EchoLog.w(TAG, "下载被取消 kind=${entry.kind}（保留 .part 以便续传）")
             throw cancellation
         } catch (throwable: Throwable) {
+            // 兜底 catch：这里的异常来自「主文件已就绪跳过」之外的路径
+            // （伴随文件下载、建目录等）。主文件的可恢复失败已在
+            // downloadMainFileWithRetry 内部处理完毕（保留 .part 并重试），
+            // 因此这里只删除 .part —— 主文件此时要么已转正（.part 已不存在，
+            // delete 是 no-op），要么失败原因已在上层判定。
             runCatching { partFile.delete() }
             val message = "下载失败：${throwable.message ?: "网络错误"}"
             EchoLog.e(
@@ -165,6 +191,146 @@ class ModelDownloader @Inject constructor(
             )
         }
     }
+
+    /**
+     * 下载主文件，失败时按指数退避重试，**每次从 `.part` 已有字节续传**。
+     *
+     * ## 为什么必须有这一层
+     *
+     * 大文件（239MB / 1.1GB）在移动网络下的长连接极不可靠。真机实测：
+     * 1.1GB 的 GGUF 在 HTTP/2 下于 581,647,329 字节处停滞 5 分半，随后
+     * `java.net.SocketException: Software caused connection abort`
+     * （堆栈 `okhttp3.internal.http2.Http2Writer.windowUpdate`）。
+     * 对照实验：同一台设备 `curl --http1.1` 完整下完 1.1GB 只需 26 秒。
+     *
+     * ## 为什么不能靠 OkHttp 的 `retryOnConnectionFailure(true)`
+     *
+     * 该开关只覆盖**连接建立失败**与部分 IO 异常，**不覆盖协议层错误**
+     * （如 HTTP/2 流控 abort）。所以应用层必须自己做重试。
+     *
+     * ## `.part` 的处置
+     *
+     * - **可恢复失败**（连接中断/超时/5xx）：**保留 `.part`**，下次 Range 续传；
+     * - **不可恢复失败**（HTTP 4xx、SHA-256 不符、体积异常）：删除 `.part`。
+     *
+     * 判据见 [isRecoverable]。
+     */
+    private suspend fun downloadMainFileWithRetry(
+        entry: ModelEntry,
+        partFile: File,
+        onProgress: (Int) -> Unit,
+        onRetry: (DownloadRetryInfo) -> Unit,
+    ): MainDownloadOutcome {
+        var lastFailure: EchoResult.Failure? = null
+        for (attempt in 1..MAX_DOWNLOAD_ATTEMPTS) {
+            try {
+                val bytes = streamDownload(entry.url, entry.sizeBytes, partFile, onProgress)
+                return MainDownloadOutcome(bytes = bytes, failure = null)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                val recoverable = isRecoverable(throwable)
+                val message = throwable.message ?: "网络错误"
+                EchoLog.w(
+                    TAG,
+                    "主文件下载中断 kind=${entry.kind} 第 $attempt/$MAX_DOWNLOAD_ATTEMPTS 次 " +
+                        "已落盘=${partFile.length()} 可恢复=$recoverable 原因=$message",
+                    throwable,
+                )
+                if (!recoverable) {
+                    // 不可恢复：删掉 .part（续传只会续到同样的错误内容）
+                    runCatching { partFile.delete() }
+                    return MainDownloadOutcome(
+                        bytes = 0L,
+                        failure = EchoResult.Failure(
+                            code = Constants.ERROR_MODEL_DOWNLOAD,
+                            message = "下载失败：$message",
+                            cause = throwable,
+                        ),
+                    )
+                }
+                lastFailure = EchoResult.Failure(
+                    code = Constants.ERROR_MODEL_DOWNLOAD,
+                    message = "下载失败：$message",
+                    cause = throwable,
+                )
+                if (attempt < MAX_DOWNLOAD_ATTEMPTS) {
+                    // 指数退避：1s / 2s（最多 3 次尝试）
+                    val backoffMs = RETRY_BACKOFF_BASE_MS * (1L shl (attempt - 1))
+                    EchoLog.i(TAG, "第 $attempt 次失败，退避 ${backoffMs}ms 后重试（保留 .part 续传）")
+                    // 通知上层「正在重试」，让 UI 提示用户而非干等
+                    runCatching {
+                        onRetry(
+                            DownloadRetryInfo(
+                                attempt = attempt,
+                                maxAttempts = MAX_DOWNLOAD_ATTEMPTS,
+                                downloadedBytes = partFile.length(),
+                                reason = message,
+                            ),
+                        )
+                    }.onFailure { throwable ->
+                        // 通知失败不得影响下载主链路
+                        EchoLog.w(TAG, "重试通知回调异常（不影响下载）", throwable)
+                    }
+                    delay(backoffMs)
+                }
+            }
+        }
+        EchoLog.e(
+            TAG,
+            "主文件下载重试耗尽 kind=${entry.kind} 已落盘=${partFile.length()} " +
+                "（保留 .part，下次继续续传）",
+        )
+        return MainDownloadOutcome(
+            bytes = partFile.length(),
+            failure = lastFailure ?: EchoResult.Failure(
+                code = Constants.ERROR_MODEL_DOWNLOAD,
+                message = "下载失败：重试 $MAX_DOWNLOAD_ATTEMPTS 次后仍失败",
+            ),
+        )
+    }
+
+    /**
+     * 判断失败是否**可恢复**（值得保留 `.part` 并重试）。
+     *
+     * 可恢复：连接中断、读超时、5xx、429 —— 都是「换个时间/换个连接可能成功」。
+     * 不可恢复：HTTP 4xx（除 429）、响应体为空 —— 重试只会得到同样的结果。
+     */
+    private fun isRecoverable(throwable: Throwable): Boolean {
+        val message = throwable.message.orEmpty()
+        // 4xx（除 429）视为不可恢复
+        val clientError = Regex("HTTP 4(\\d{2})").find(message)?.groupValues?.get(1)?.toIntOrNull()
+        if (clientError != null && clientError != 429) return false
+        if (message.contains("HTTP 4") && !message.contains("HTTP 429")) return false
+        if (message.contains("响应体为空")) return false
+        // 其余（SocketException / SocketTimeoutException / 5xx / 未知 IO 异常）均可恢复
+        return true
+    }
+
+    /**
+     * 主文件下载结果。[bytes] 为已落盘字节数（失败时为 `.part` 当前大小）。
+     *
+     * @param failure 非空表示最终失败；此时 `.part` 的处置已由 [downloadMainFileWithRetry] 决定。
+     */
+    private data class MainDownloadOutcome(
+        val bytes: Long,
+        val failure: EchoResult.Failure?,
+    )
+
+    /**
+     * 可恢复失败后的**重试通知**（供上层提示用户「网络不稳定，正在重试」）。
+     *
+     * @param attempt 本次是第几次尝试（从 1 开始）。
+     * @param maxAttempts 总尝试次数上限。
+     * @param downloadedBytes 已落盘字节数（重试时会从该处续传）。
+     * @param reason 本次失败的真实原因。
+     */
+    data class DownloadRetryInfo(
+        val attempt: Int,
+        val maxAttempts: Int,
+        val downloadedBytes: Long,
+        val reason: String,
+    )
 
     /**
      * 下载伴随文件（如 ASR 的 `tokens.txt`，FR-012）。
@@ -301,6 +467,11 @@ class ModelDownloader @Inject constructor(
             // totalBytes 必须从 0 起算——否则与 existingBytes 双计，进度百分比虚高
             totalBytes = if (append) existingBytes else 0L
             RandomAccessFile(partFile, "rw").use { raf ->
+                if (!append) {
+                    // 从头写：先截断，否则旧文件尾部会残留上一轮的字节，
+                    // 导致文件长度虚高、通过体积门槛但内容是错的
+                    raf.setLength(0L)
+                }
                 raf.seek(if (append) existingBytes else 0L)
                 val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
                 body.byteStream().use { input ->
@@ -328,5 +499,11 @@ class ModelDownloader @Inject constructor(
         private const val TAG = "ModelDownloader"
         private const val DOWNLOAD_BUFFER_BYTES = 64 * 1024
         private const val PARTIAL_CONTENT = 206
+
+        /** 主文件下载的最大尝试次数（含首次）。 */
+        private const val MAX_DOWNLOAD_ATTEMPTS = 3
+
+        /** 重试退避基数（毫秒）；第 n 次重试等待 base × 2^(n-1)。 */
+        private const val RETRY_BACKOFF_BASE_MS = 1_000L
     }
 }
