@@ -1,15 +1,21 @@
 package com.echolog.app.service
 
+import android.Manifest
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.HandlerThread
 import android.os.Process
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.echolog.app.core.common.ApplicationScope
 import com.echolog.app.core.common.Constants
+import com.echolog.app.core.common.EchoResult
 import com.echolog.app.core.common.IoDispatcher
+import com.echolog.app.R
+import com.echolog.app.core.util.EchoLog
 import com.echolog.app.core.util.FileUtils
 import com.echolog.app.core.util.TimeUtils
 import com.echolog.app.data.media.AudioRecorder
@@ -24,6 +30,7 @@ import com.echolog.app.domain.repository.ScheduleTemplateRepository
 import com.echolog.app.domain.repository.SettingsRepository
 import com.echolog.app.domain.usecase.AddMarkerUseCase
 import com.echolog.app.domain.usecase.SettleScheduler
+import com.echolog.app.domain.usecase.StartMonitoringUseCase
 import com.echolog.app.domain.usecase.StopMonitoringAndSettleUseCase
 import com.echolog.app.service.notify.NotificationHelper
 import com.echolog.app.service.vad.EnergyVadEngine
@@ -85,6 +92,10 @@ class RecordingService : Service() {
     @Inject
     lateinit var addMarkerUseCase: AddMarkerUseCase
 
+    /** 快捷入口「开始录音」复用应用内同一建档链路（用户需求：锁屏/状态栏一键开始）。 */
+    @Inject
+    lateinit var startMonitoringUseCase: StartMonitoringUseCase
+
     @Inject
     lateinit var storageLocationManager: StorageLocationManager
 
@@ -110,6 +121,18 @@ class RecordingService : Service() {
     /** 暂停标记（用户需求 2：通知栏暂停/继续）。暂停时服务保持前台但音频循环停止。 */
     @Volatile
     private var paused: Boolean = false
+
+    /**
+     * 待命标记（用户需求：锁屏/状态栏快捷录音入口）。
+     *
+     * 待命 = 服务保持前台、音频循环未运行、常驻通知为快捷录音入口。
+     * 与 [paused] 的区别：暂停是用户主动暂停（可继续当天监听，DB 仍是 MONITORING，
+     * 心跳由 [startPauseHeartbeat] 维持）；待命是当天已结束（DB 已转 SETTLING），
+     * 服务仅为快捷入口常驻，且**不写心跳**（`monitorActive` 已为 false，
+     * HealthCheckWorker 不会误判服务已死而拉起）。
+     */
+    @Volatile
+    private var standby: Boolean = false
 
     @Volatile
     private var dayId: String? = null
@@ -179,6 +202,9 @@ class RecordingService : Service() {
     /** 暂停期间的心跳保活 Job（音频循环停止后由它维持健康检查依据）。 */
     private var pauseHeartbeatJob: Job? = null
 
+    /** 待命期间的开关监听 Job（用户在设置里关闭快捷入口后让服务自行退出）。 */
+    private var quickRecordWatchJob: Job? = null
+
     override fun onCreate() {
         super.onCreate()
         audioThread = HandlerThread("EchoAudioThread", Process.THREAD_PRIORITY_AUDIO)
@@ -193,10 +219,59 @@ class RecordingService : Service() {
             Constants.ACTION_ADD_MARKER -> handleMarker(intent)
             Constants.ACTION_STOP_SETTLE -> handleStop(intent)
             Constants.ACTION_MANUAL_TOGGLE -> handleManualToggle(intent)
-            else -> if (!running) stopSelfSafely()
+            Constants.ACTION_QUICK_START -> handleQuickStart()
+            Constants.ACTION_STANDBY -> handleEnterStandby()
+            // P0 修复：系统按 START_STICKY 语义重启服务时，**Intent 为 null**
+            // （或 action 为 null），此时不能走「未知动作 → 自杀」分支：
+            // 那会让服务刚被系统拉起就立刻 stopSelfSafely()，锁屏快捷录音入口
+            // **永远不会被重建**（用户体感：锁屏的 bar 莫名其妙消失了，只能
+            // 冷启动 App 才能回来）。
+            //
+            // 处理：按「系统重启 → 重建待命入口」处理。重建失败（缺权限、
+            // 系统拒绝 microphone 型 FGS）由 handleEnterStandby 内部兜住并
+            // 转失败出口，不会崩。
+            null -> handleRestartWithoutIntent()
+            else -> if (!running && !standby) stopSelfSafely()
         }
         // 被系统杀死后带空 Intent 重启时尽量恢复（START_STICKY 语义）
         return START_STICKY
+    }
+
+    /**
+     * 系统按 START_STICKY 语义重启服务（Intent 为 null）时的恢复逻辑。
+     *
+     * 三种可能状态：
+     * 1. 原本在监听/暂停 → 音频循环已被系统一并回收，需要重新拉起监听；
+     * 2. 原本在待命（快捷入口） → 重建待命入口，锁屏 bar 回来；
+     * 3. 原本就没在工作 → 无需恢复，让服务自行退出。
+     *
+     * 判据用「当天是否存在监听中的录音日」而非内存态——内存态在进程被杀后已丢失。
+     */
+    private fun handleRestartWithoutIntent() {
+        EchoLog.i(TAG, "系统重启服务（空 Intent），尝试恢复状态")
+        scope.launch(ioDispatcher) {
+            val hasMonitoringDay = recordingRepository.observeDays().first()
+                .any { it.state == DayState.MONITORING }
+            when {
+                hasMonitoringDay -> {
+                    // 监听日仍在：重新拉起监听链路（handleStart 内部有权限校验，
+                    // 缺权限时走失败出口而非崩溃）
+                    EchoLog.i(TAG, "存在监听中的录音日 → 恢复监听")
+                    val resumeIntent = Intent()
+                    resumeIntent.action = Constants.ACTION_RESUME
+                    handleStart(resumeIntent)
+                }
+                settingsRepository.getSettings().quickRecordNotificationEnabled -> {
+                    // 无监听日但快捷入口开着 → 重建待命入口（锁屏 bar 恢复）
+                    EchoLog.i(TAG, "无监听中的录音日且快捷入口已开启 → 重建待命入口")
+                    handleEnterStandby()
+                }
+                else -> {
+                    EchoLog.i(TAG, "无监听中的录音日且快捷入口已关闭 → 服务无需存在")
+                    stopSelfSafely()
+                }
+            }
+        }
     }
 
     // ── Action 处理 ──
@@ -208,6 +283,23 @@ class RecordingService : Service() {
      * 再异步确认目标录音日并启动音频循环。
      */
     private fun handleStart(intent: Intent) {
+        // P0 崩溃防线（与 handleEnterStandby 同源）：本服务是 microphone 型前台服务，
+        // `startForeground` 在缺 `RECORD_AUDIO` 时抛 `SecurityException` ⇒ 进程崩溃。
+        // 到达此处的路径不止一条（应用内开启监听、通知栏「继续」、健康检查自动恢复、
+        // 快捷入口 QUICK_START），其中**健康检查恢复**完全自动，权限可能在监听期间
+        // 被用户在系统设置里撤销——因此必须在这里兜住，不能依赖上游校验。
+        if (!hasRecordAudioPermission()) {
+            EchoLog.w(TAG, "缺少录音权限，无法进入前台监听（不进入前台，避免崩溃）")
+            notifyQuickStartFailed(getString(R.string.notify_quick_start_reason_permission))
+            // 用 stopSelfSafely（= 撤前台 + stopSelf）：本分支可能「从未进入前台」
+            // （冷启动开启监听），也可能「已在待命前台」（通知栏继续），
+            // 而 stopForeground 对未处于前台的服务是 no-op，故统一走既有收尾路径。
+            stopSelfSafely()
+            return
+        }
+        // 离开待命态（快捷入口 → 监听中）：停止开关监听，常驻通知由 startForeground 换入
+        standby = false
+        cancelQuickRecordWatch()
         startForegroundCompat(buildMonitorNotification(RecordingServiceState.MONITORING, 0L, 0L, 0, 0))
         scope.launch(ioDispatcher) {
             val targetDayId = intent.getStringExtra(Constants.EXTRA_DAY_ID)
@@ -347,11 +439,15 @@ class RecordingService : Service() {
         val targetDayId = intent?.getStringExtra(Constants.EXTRA_DAY_ID)
         synchronized(serviceLock) {
             if (targetDayId != null && targetDayId != dayId) {
-                // 停的是别的天：不动当前音频；服务本就未运行时无需存活
-                if (!running) stopSelfSafely()
+                // 停的是别的天：不动当前音频。**待命态必须保留**——跨天 Worker
+                // 归档昨天时会投递该动作，若顺手 stopSelf 会把快捷入口一起撤掉
+                // （用户体感：没动过它，锁屏入口却莫名没了）。
+                if (!running && !standby) stopSelfSafely()
                 return
             }
             if (!running) {
+                // 待命态（当天已结束）：没有音频循环可收尾，保留快捷入口常驻
+                if (standby) return
                 stopSelfSafely()
                 return
             }
@@ -360,6 +456,105 @@ class RecordingService : Service() {
         }
         cancelPauseHeartbeat()
         // 音频循环自行退出（≤1 帧，25ms）并在 finally 中收尾片段/停止前台
+    }
+
+    /**
+     * 快捷入口「开始录音」（用户需求：锁屏/状态栏一键开始录音）。
+     *
+     * 复用 [StartMonitoringUseCase]——与应用内「开始记录」按钮**完全同一链路**
+     * （建档/续档当天 → 置监听活跃标记 → 拉起前台服务），避免两条路径行为漂移；
+     * 服务随后收到 [Constants.ACTION_START_MONITORING]，由 [handleStart] 把常驻
+     * 通知从快捷入口换回监听通知（两者共用同一通知 id，天然互斥）。
+     *
+     * 失败**不静默**（项目红线）：缺麦克风权限或建档失败时发一条高优先级通知，
+     * 点击回到应用内处理。
+     */
+    private fun handleQuickStart() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifyQuickStartFailed(getString(R.string.notify_quick_start_reason_permission))
+            return
+        }
+        scope.launch(ioDispatcher) {
+            when (val result = startMonitoringUseCase()) {
+                is EchoResult.Success -> Unit // 监听通知由 handleStart 换入
+                is EchoResult.Failure -> notifyQuickStartFailed(result.message)
+            }
+        }
+    }
+
+    /**
+     * 直接进入待命态（快捷录音入口）：开机自恢复 / 设置开关打开时调用
+     * （[Constants.ACTION_STANDBY]，经 `ServiceController.enterStandby`）。
+     *
+     * 与 [enterStandbyMode] 的区别：本方法**尚未处于前台**，需先
+     * `startForegroundCompat` 挂出快捷通知；[enterStandbyMode] 是「音频循环刚退出、
+     * 服务本就在前台」时只替换通知内容的路径。
+     *
+     * 已在监听/暂停/待命时**无操作**——不得打断进行中的录音。
+     */
+    private fun handleEnterStandby() {
+        if (running || paused || standby) return
+        // 入口已成功建立：撤掉可能残存的「入口未建立」提醒（该提醒是 ongoing，
+        // 用户滑不掉，只能由应用主动 cancel）。放在成功路径可覆盖全部调用方。
+        // 铁律 5：撤通知属旁支动作，失败不得中断主链路（`onStartCommand` 无兜底）。
+        runCatching { notificationHelper.cancel(Constants.NOTIFICATION_ID_QUICK_ENTRY_FAILED) }
+            .onFailure { throwable ->
+                EchoLog.w(TAG, "撤下「入口未建立」提醒失败（不影响入口建立）", throwable)
+            }
+        // P0 崩溃兜底：`startForeground` 在缺 `RECORD_AUDIO`（或厂商 ROM 收紧）时抛
+        // `SecurityException`。该异常从 `onStartCommand` 冒泡 ⇒ **进程直接崩**
+        // （装机实测：启动即闪退）。调用方虽已校验权限，但权限状态可能在
+        // 「startForegroundService → 本方法」之间被撤销，故此处仍必须兜住。
+        val foregroundStarted = runCatching {
+            startForegroundCompat(
+                notificationHelper.buildQuickRecordNotification(TimeUtils.todayDayId()),
+            )
+        }.onFailure { throwable ->
+            EchoLog.w(TAG, "建立快捷入口失败：系统拒绝 microphone 型前台服务", throwable)
+            notifyQuickEntryFailed(
+                getString(
+                    R.string.notify_quick_entry_reason_start,
+                    throwable.message ?: throwable::class.java.simpleName,
+                ),
+            )
+            // 入口没建起来，服务没有存在意义。用 stopSelfSafely（= 撤前台 + stopSelf）：
+            // 本分支通常「从未成功进入前台」，而 stopForeground 对未处于前台的服务
+            // 是 no-op，故统一走既有收尾路径即可。
+            stopSelfSafely()
+        }.isSuccess
+        if (!foregroundStarted) return
+        standby = true
+        startQuickRecordSettingWatch()
+    }
+
+    /** 快捷入口**建立失败**的可见提示（不可滑掉，点击回应用内）。 */
+    private fun notifyQuickEntryFailed(reason: String) {
+        notificationHelper.notify(
+            Constants.NOTIFICATION_ID_QUICK_ENTRY_FAILED,
+            notificationHelper.buildQuickEntryFailedNotification(reason),
+        )
+    }
+
+    /**
+     * 是否持有录音权限。
+     *
+     * 服务声明 `foregroundServiceType="microphone"`，系统在
+     * [startForegroundCompat] 的**瞬间**就要求 `RECORD_AUDIO`
+     * （与当时是否真的在录音无关）。缺权限时必须**不进入前台**并给可见提示，
+     * 否则抛 `SecurityException` 崩掉进程。
+     */
+    private fun hasRecordAudioPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** 快捷入口启动失败的可见提示（[Constants.CHANNEL_ALERT]，点击回应用内）。 */
+    private fun notifyQuickStartFailed(reason: String) {
+        notificationHelper.notify(
+            Constants.NOTIFICATION_ID_ALERT,
+            notificationHelper.buildQuickStartFailedNotification(reason),
+        )
     }
 
     /**
@@ -695,6 +890,12 @@ class RecordingService : Service() {
             startPauseHeartbeat()
             return
         }
+        // 用户需求：快捷录音入口——待命态**保持前台**并把常驻通知换成快捷入口，
+        // 而不是 stopForeground(REMOVE)（现状行为由设置项开关决定）
+        if (settingsRepository.getSettings().quickRecordNotificationEnabled) {
+            enterStandbyMode()
+            return
+        }
         stopForegroundCompat()
         stopSelf()
         // BUG-6 修复：不清除 error 字段——音频错误态（E-1001/E-2001）必须保留到
@@ -722,6 +923,47 @@ class RecordingService : Service() {
     private fun cancelPauseHeartbeat() {
         pauseHeartbeatJob?.cancel()
         pauseHeartbeatJob = null
+    }
+
+    // ── 待命态：快捷录音入口（用户需求：锁屏/状态栏一键开始录音） ──
+
+    /**
+     * 进入待命态：服务**保持前台**，常驻通知切换为快捷录音入口。
+     *
+     * 与监听通知共用 [Constants.NOTIFICATION_ID_MONITOR]，故两者互斥——
+     * 任一时刻状态栏/锁屏上只有一条，不需要额外的取消逻辑。
+     */
+    private fun enterStandbyMode() {
+        standby = true
+        notificationHelper.notify(
+            Constants.NOTIFICATION_ID_MONITOR,
+            notificationHelper.buildQuickRecordNotification(TimeUtils.todayDayId()),
+        )
+        startQuickRecordSettingWatch()
+    }
+
+    /**
+     * 待命期间监听快捷入口开关：用户在设置里关闭后服务自行退出，
+     * 恢复「结束即撤掉通知」的现状行为。
+     *
+     * 否则关闭开关后常驻通知依旧存在（且要等下一次录音结束才消失）——
+     * 属于「设置项静默失效」，与项目红线冲突。
+     */
+    private fun startQuickRecordSettingWatch() {
+        quickRecordWatchJob?.cancel()
+        quickRecordWatchJob = scope.launch(ioDispatcher) {
+            runCatching {
+                settingsRepository.observeSettings()
+                    .first { !it.quickRecordNotificationEnabled }
+                standby = false
+                stopSelfSafely()
+            }
+        }
+    }
+
+    private fun cancelQuickRecordWatch() {
+        quickRecordWatchJob?.cancel()
+        quickRecordWatchJob = null
     }
 
     // ── 节流推送 ──
@@ -846,6 +1088,7 @@ class RecordingService : Service() {
             paused = false
         }
         cancelPauseHeartbeat()
+        cancelQuickRecordWatch()
         // BUG-3 修复：同步等待音频循环退出（含 finally 的片段收尾与 DB 落账），
         // 再释放 recorder——避免与音频线程的 endSegmentFile/finishSegment 竞态
         // （native crash + 收尾数据丢失）
@@ -867,6 +1110,7 @@ class RecordingService : Service() {
     override fun onBind(intent: Intent?) = null
 
     companion object {
+        private const val TAG = "RecordingService"
         private const val CALIBRATION_FRAMES = 20
         private const val STATE_PUSH_INTERVAL_MS = 500L
         private const val MAX_VAD_ERROR_STREAK = 3

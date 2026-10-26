@@ -3,7 +3,9 @@ package com.echolog.app.ai.model
 import com.echolog.app.core.common.Constants
 import com.echolog.app.core.common.EchoResult
 import com.echolog.app.core.common.IoDispatcher
+import com.echolog.app.core.util.EchoLog
 import com.echolog.app.core.util.FileUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -21,6 +23,11 @@ import javax.inject.Singleton
  * - 断点续传：`.part` 临时文件 + `Range: bytes=<已下载>` 头；
  * - 完整性：下载完成后 SHA-256 校验（[ModelEntry.sha256] 非空时）；
  * - 失败分类：网络/IO → E-6001；校验不符 → E-6002（删除重下）。
+ *
+ * **可观测性（静默失败红线）**：本类此前**零日志**——HTTP 状态码、Content-Length、
+ * 是否走了续传、实际落盘字节数全部不可见，失败原因只存在于返回值里，而上层
+ * [ModelManager] 曾把它直接丢弃。现所有失败返回点与关键节点都有日志，
+ * 且失败原因会经 [ModelManager.lastErrors] 透传到界面。
  */
 @Singleton
 class ModelDownloader @Inject constructor(
@@ -44,22 +51,43 @@ class ModelDownloader @Inject constructor(
         FileUtils.ensureDirectory(targetDir)
         val targetFile = File(targetDir, entry.fileName)
         val partFile = File(targetDir, "${entry.fileName}.part")
+        EchoLog.i(
+            TAG,
+            "开始下载 kind=${entry.kind} file=${entry.fileName} 期望字节=${entry.sizeBytes} " +
+                "门槛字节=${entry.minSizeBytes} url=${entry.url}",
+        )
         try {
             // 主文件已就绪（体积达标，下载时已校验过 SHA-256）则跳过重下：
             // 避免伴随文件缺失导致重试时重复下载大文件
             if (!(targetFile.isFile && targetFile.length() >= entry.minSizeBytes)) {
                 val downloadedBytes = streamDownload(entry.url, entry.sizeBytes, partFile, onProgress)
+                EchoLog.i(
+                    TAG,
+                    "主文件下载结束 kind=${entry.kind} 落盘字节=$downloadedBytes " +
+                        "门槛=${entry.minSizeBytes} 是否达标=${downloadedBytes >= entry.minSizeBytes}",
+                )
                 if (downloadedBytes < entry.minSizeBytes) {
                     partFile.delete()
+                    val message = "下载文件过小（${FileUtils.formatBytes(downloadedBytes)}），可能为错误页"
+                    EchoLog.e(
+                        TAG,
+                        "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_DOWNLOAD} " +
+                            "原因=$message（已删除 .part）",
+                    )
                     return@withContext EchoResult.failure(
                         Constants.ERROR_MODEL_DOWNLOAD,
-                        "下载文件过小（${FileUtils.formatBytes(downloadedBytes)}），可能为错误页",
+                        message,
                     )
                 }
                 if (entry.sha256.isNotBlank()) {
                     val actual = FileUtils.sha256Hex(partFile)
                     if (!actual.equals(entry.sha256, ignoreCase = true)) {
                         partFile.delete()
+                        EchoLog.e(
+                            TAG,
+                            "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_CHECKSUM} " +
+                                "原因=SHA-256 校验失败（期望=${entry.sha256} 实际=$actual，已删除 .part）",
+                        )
                         return@withContext EchoResult.failure(
                             Constants.ERROR_MODEL_CHECKSUM,
                             "SHA-256 校验失败",
@@ -68,36 +96,71 @@ class ModelDownloader @Inject constructor(
                 }
                 if (!partFile.renameTo(targetFile)) {
                     partFile.delete()
+                    EchoLog.e(
+                        TAG,
+                        "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_DOWNLOAD} " +
+                            "原因=临时文件转正失败（${partFile.name} → ${targetFile.name}，已删除 .part）",
+                    )
                     return@withContext EchoResult.failure(Constants.ERROR_MODEL_DOWNLOAD, "临时文件转正失败")
                 }
+                EchoLog.i(TAG, "主文件已转正 kind=${entry.kind} 路径=${targetFile.absolutePath}")
+            } else {
+                EchoLog.i(
+                    TAG,
+                    "主文件已就绪，跳过下载 kind=${entry.kind} 路径=${targetFile.absolutePath}",
+                )
             }
             // 伴随文件（如 tokens.txt）缺失时按同目录约定下载，完成后校验存在性
             val missingExtras = entry.additionalFiles
                 .filter { File(targetDir, it).let { file -> !file.isFile || file.length() == 0L } }
             if (missingExtras.isNotEmpty()) {
+                EchoLog.i(TAG, "需要下载伴随文件 kind=${entry.kind} 文件=$missingExtras")
                 val extrasResult = downloadAdditionalFiles(entry, targetDir)
                 if (extrasResult.isFailure) {
+                    val cause = extrasResult.failureOrNull()
+                    EchoLog.e(
+                        TAG,
+                        "下载失败 kind=${entry.kind} code=${cause?.code} " +
+                            "原因=伴随文件下载失败：${cause?.message}",
+                    )
                     return@withContext EchoResult.failure(
                         Constants.ERROR_MODEL_DOWNLOAD,
-                        "伴随文件下载失败：${extrasResult.failureOrNull()?.message ?: "未知错误"}",
+                        "伴随文件下载失败：${cause?.message ?: "未知错误"}",
                     )
                 }
             }
             val stillMissing = entry.additionalFiles
                 .filter { File(targetDir, it).let { file -> !file.isFile || file.length() == 0L } }
             if (stillMissing.isNotEmpty()) {
+                EchoLog.e(
+                    TAG,
+                    "下载失败 kind=${entry.kind} code=${Constants.ERROR_ASR_MODEL_MISSING} " +
+                        "原因=缺少伴随文件：${stillMissing.joinToString()}",
+                )
                 return@withContext EchoResult.failure(
                     Constants.ERROR_ASR_MODEL_MISSING,
                     "缺少伴随文件：${stillMissing.joinToString()}",
                 )
             }
             onProgress(100)
+            EchoLog.i(TAG, "下载完成 kind=${entry.kind} 文件=${targetFile.absolutePath}")
             EchoResult.success(targetFile)
+        } catch (cancellation: CancellationException) {
+            // 协程取消**不是失败**：不吞、不转成 failure（项目约定：不得吞取消）。
+            runCatching { partFile.delete() }
+            EchoLog.w(TAG, "下载被取消 kind=${entry.kind}（已删除 .part）")
+            throw cancellation
         } catch (throwable: Throwable) {
             runCatching { partFile.delete() }
+            val message = "下载失败：${throwable.message ?: "网络错误"}"
+            EchoLog.e(
+                TAG,
+                "下载失败 kind=${entry.kind} code=${Constants.ERROR_MODEL_DOWNLOAD} 原因=$message",
+                throwable,
+            )
             EchoResult.failure(
                 Constants.ERROR_MODEL_DOWNLOAD,
-                "下载失败：${throwable.message ?: "网络错误"}",
+                message,
                 throwable,
             )
         }
@@ -124,27 +187,54 @@ class ModelDownloader @Inject constructor(
                 continue
             }
             val url = deriveSiblingUrl(entry, name)
-                ?: return@withContext EchoResult.failure(
-                    Constants.ERROR_MODEL_DOWNLOAD,
-                    "无法推导伴随文件「$name」的下载地址（主 URL 不含主文件名）",
-                )
+                ?: run {
+                    EchoLog.e(
+                        TAG,
+                        "伴随文件下载失败 kind=${entry.kind} 文件=$name " +
+                            "原因=无法推导下载地址（主 URL 不含主文件名）",
+                    )
+                    return@withContext EchoResult.failure(
+                        Constants.ERROR_MODEL_DOWNLOAD,
+                        "无法推导伴随文件「$name」的下载地址（主 URL 不含主文件名）",
+                    )
+                }
             try {
                 FileUtils.ensureDirectory(targetDir)
                 val partFile = File(targetDir, "$name.part")
                 val downloadedBytes = streamDownload(url, entry.sizeBytes, partFile) { }
+                EchoLog.i(
+                    TAG,
+                    "伴随文件下载结束 kind=${entry.kind} 文件=$name 落盘字节=$downloadedBytes",
+                )
                 if (downloadedBytes <= 0L || !partFile.renameTo(targetFile)) {
                     partFile.delete()
+                    EchoLog.e(
+                        TAG,
+                        "伴随文件下载失败 kind=${entry.kind} 文件=$name " +
+                            "原因=落盘字节=$downloadedBytes 或转正失败（已删除 .part）",
+                    )
                     return@withContext EchoResult.failure(
                         Constants.ERROR_MODEL_DOWNLOAD,
                         "伴随文件「$name」下载失败",
                     )
                 }
                 ready.add(targetFile)
+            } catch (cancellation: CancellationException) {
+                runCatching { File(targetDir, "$name.part").delete() }
+                EchoLog.w(TAG, "伴随文件下载被取消 kind=${entry.kind} 文件=$name")
+                throw cancellation
             } catch (throwable: Throwable) {
                 runCatching { File(targetDir, "$name.part").delete() }
+                val message = "伴随文件「$name」下载失败：${throwable.message ?: "网络错误"}"
+                EchoLog.e(
+                    TAG,
+                    "伴随文件下载失败 kind=${entry.kind} 文件=$name " +
+                        "code=${Constants.ERROR_MODEL_DOWNLOAD} 原因=$message",
+                    throwable,
+                )
                 return@withContext EchoResult.failure(
                     Constants.ERROR_MODEL_DOWNLOAD,
-                    "伴随文件「$name」下载失败：${throwable.message ?: "网络错误"}",
+                    message,
                     throwable,
                 )
             }
@@ -159,7 +249,17 @@ class ModelDownloader @Inject constructor(
         return entry.url.substring(0, index) + siblingName
     }
 
-    /** 流式下载（含断点续传），返回本次落盘字节总数。 */
+    /**
+     * 流式下载（含断点续传），返回本次落盘字节总数。
+     *
+     * **影子变量 bug 修复（会让下载永远失败）**：此前本方法在 `use {}` 块**内**
+     * 声明了 `var totalBytes`，而 `return totalBytes` 在块**外**——Kotlin 的块内
+     * 局部变量会**遮蔽**外层同名变量，于是方法返回的其实是「下载**前**已有的字节数」
+     * （首次下载恒为 0），而不是实际落盘字节。
+     * 后果链：上层拿到 0 → 判定「文件过小」→ **删掉刚下好的 .part** → 下载
+     * 永远无法成功，且用户看到的失败原因是**假的**（"可能为错误页"）。
+     * 现在 `totalBytes` 只声明一次（块外），块内只赋值，返回值即真实落盘字节。
+     */
     private fun streamDownload(
         url: String,
         expectedSizeBytes: Long,
@@ -171,16 +271,35 @@ class ModelDownloader @Inject constructor(
         if (existingBytes > 0L) {
             requestBuilder.header("Range", "bytes=$existingBytes-")
         }
-        var totalBytes = existingBytes
+        EchoLog.i(
+            TAG,
+            "发起请求 url=$url 断点续传=${existingBytes > 0L} 已存在字节=$existingBytes " +
+                "期望字节=$expectedSizeBytes 目标文件=${partFile.name}",
+        )
+        // 声明在 use 块外：块内同名局部变量会遮蔽它（见上方 KDoc 的 bug 说明）
+        var totalBytes = 0L
         okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+            EchoLog.i(
+                TAG,
+                "收到响应 url=$url HTTP=${response.code} Content-Length=${response.header("Content-Length")} " +
+                    "已存在字节=$existingBytes",
+            )
             if (!response.isSuccessful) {
+                EchoLog.e(TAG, "响应非成功状态 url=$url HTTP=${response.code} ${response.message}")
                 throw IOException("HTTP ${response.code}")
             }
             val body = response.body ?: throw IOException("响应体为空")
             val append = response.code == PARTIAL_CONTENT && existingBytes > 0L
+            if (existingBytes > 0L && !append) {
+                // 服务端忽略 Range 返回 200：必须从头写，否则会与已存在字节双计
+                EchoLog.w(
+                    TAG,
+                    "服务端未按 Range 续传（HTTP=${response.code}，请求 bytes=$existingBytes-）→ 从头写入",
+                )
+            }
             // BUG-12 修复：服务端忽略 Range 返回 200 时从头写（append=false），
             // totalBytes 必须从 0 起算——否则与 existingBytes 双计，进度百分比虚高
-            var totalBytes = if (append) existingBytes else 0L
+            totalBytes = if (append) existingBytes else 0L
             RandomAccessFile(partFile, "rw").use { raf ->
                 raf.seek(if (append) existingBytes else 0L)
                 val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
@@ -197,10 +316,16 @@ class ModelDownloader @Inject constructor(
                 }
             }
         }
+        EchoLog.i(
+            TAG,
+            "写入完成 url=$url 落盘总字节=$totalBytes 本次新增=${totalBytes - existingBytes} " +
+                "目标文件=${partFile.absolutePath}",
+        )
         return totalBytes
     }
 
     companion object {
+        private const val TAG = "ModelDownloader"
         private const val DOWNLOAD_BUFFER_BYTES = 64 * 1024
         private const val PARTIAL_CONTENT = 206
     }

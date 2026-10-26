@@ -54,4 +54,13 @@ interface SettingsRepository {
 
     /** 录音模式（用户需求 4：全天/自动/模板/手动）。 */
     suspend fun setRecordingMode(mode: RecordingMode)
+
+    /**
+     * 待命态快捷录音入口开关（用户需求：锁屏/状态栏一键开始录音）。
+     *
+     * 开启（默认）：结束录音后服务保持前台待命，常驻通知换为快捷入口；
+     * 关闭：恢复「结束即撤掉通知」的行为。服务在待命态会监听本设置，
+     * 关闭后自行退出（见 `RecordingService.startQuickRecordSettingWatch`）。
+     */
+    suspend fun setQuickRecordNotificationEnabled(enabled: Boolean)
 }

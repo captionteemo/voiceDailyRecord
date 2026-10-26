@@ -25,6 +25,26 @@
     <string name="notify_action_start_record">开始录音</string>
     <string name="notify_action_stop_record">停止录音</string>
 
+    <!-- 快捷录音常驻入口（用户需求：锁屏/状态栏一键开始录音） -->
+    <string name="channel_quick_record_name">快捷录音</string>
+    <string name="channel_quick_record_desc">未录音时的常驻快捷入口，锁屏可见且不可滑掉</string>
+    <string name="notify_quick_record_title">回声日志待命</string>
+    <string name="notify_quick_record_text">点「开始录音」立即开始记录</string>
+    <string name="notify_quick_start_failed_title">无法开始录音</string>
+    <string name="notify_quick_start_failed_text">%1$s</string>
+    <string name="notify_quick_start_reason_permission">缺少麦克风权限，点此打开应用授权</string>
+    <string name="permission_notification_denied">未授予通知权限，锁屏快捷录音入口不可用（可在系统设置中开启通知后重试）</string>
+
+    <!-- 快捷入口「建立失败」提示（项目红线：入口没建起来不得静默） -->
+    <string name="notify_quick_entry_failed_title">快捷录音入口未建立</string>
+    <string name="notify_quick_entry_failed_text">%1$s</string>
+    <string name="notify_quick_entry_reason_start">系统不允许后台启动录音服务（%1$s）。请在「设置 → 锁屏快捷录音」关闭再打开该开关重试。</string>
+    <string name="notify_quick_entry_reason_settings">读取设置失败，无法确认快捷入口开关状态。请在「设置 → 锁屏快捷录音」重新打开该开关。</string>
+    <string name="notify_quick_entry_reason_no_record_audio">缺少录音权限，无法建立快捷录音入口。请在系统设置中授予麦克风权限后重试。</string>
+
+    <!-- 模型下载失败原因（动态文本，%1$s 为真实原因） -->
+    <string name="model_error_reason">失败原因：%1$s</string>
+
     <!-- 进度通知 -->
     <string name="notify_progress_text">已完成 %1$d%%</string>
 
@@ -174,6 +194,8 @@
     <string name="settings_cloud_enhance_desc">云端增强转写将在后续版本提供（P1 规划中）</string>
     <string name="settings_encryption">本地加密</string>
     <string name="settings_encryption_desc">本地加密将在后续版本提供（P1 规划中）</string>
+    <string name="settings_quick_record_notification">锁屏快捷录音</string>
+    <string name="settings_quick_record_notification_desc">未录音时常驻「开始录音」入口，可在状态栏与锁屏一键开始；关闭后结束录音即撤掉通知</string>
     <string name="settings_models">模型管理</string>
     <string name="settings_models_desc">查看 / 下载端侧转写与总结模型</string>
     <string name="settings_storage_used">音频占用 %1$s · 可用 %2$s</string>

@@ -137,6 +137,15 @@ fun SettingsScreen(
                     enabled = false,
                     onCheckedChange = { viewModel.setEncryption(it) },
                 )
+                HorizontalDivider()
+                // 用户需求：锁屏/状态栏快捷录音入口（关闭即恢复「结束录音后撤掉通知」）
+                SettingsSwitchRow(
+                    title = stringResource(R.string.settings_quick_record_notification),
+                    subtitle = stringResource(R.string.settings_quick_record_notification_desc),
+                    checked = state.settings.quickRecordNotificationEnabled,
+                    enabled = true,
+                    onCheckedChange = { viewModel.setQuickRecordNotificationEnabled(it) },
+                )
             }
 
             // ── 录音行为 ──

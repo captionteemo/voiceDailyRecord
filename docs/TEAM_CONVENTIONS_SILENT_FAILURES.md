@@ -160,6 +160,155 @@ mergedOffset = sumOf(该片段之前所有片段的 durationMs) + (transcript.st
 
 ---
 
+## 铁律 9：验证「App 能否联网」只能看**装机后 APK 的权限**
+
+> 来源：BUG-13「无法下载端侧模型」（2026-10-26）
+
+`android.permission.INTERNET` 是 normal 权限（安装即授予、无需运行时申请），
+但**必须显式写在 `AndroidManifest.xml` 里**才会被授予。漏声明时：
+
+- **不报错、不崩溃、没有任何日志**；
+- App 进程的所有 socket 抛 `java.net.SocketException: Permission denied`
+  （**不是** `UnknownHostException`，所以按「DNS 问题」排查会完全跑偏）；
+- 建目录、读设置等**不涉及网络**的操作照常成功 —— 于是出现迷惑现象：
+  `files/models/asr/` 目录**被创建了**，但里面**零字节**。
+
+### 排查陷阱：ADB shell 测网络 ≠ App 能联网
+
+| 手段 | 反映的是谁的权限 |
+|---|---|
+| `adb shell ping modelscope.cn` | **shell 进程**（自带权限） |
+| `adb shell curl ...` | **shell 进程** |
+| `adb shell run-as <pkg> curl ...` | App uid，但 run-as 沙箱**无 DNS 属性**，结果同样不可信 |
+
+shell 全都通 ≠ App 能联网。**唯一可信的判据**：
+```bash
+aapt2 dump permissions app/build/outputs/apk/debug/app-debug.apk | grep INTERNET
+# 装机后：
+adb shell dumpsys package <pkg> | sed -n '/install permissions:/,/User 0/p'
+# 必须看到 android.permission.INTERNET: granted=true
+```
+
+**判据**：任何涉及「App 下载远端资源」的功能（模型权重、manifest、翻译接口），
+**上线前必须核对装机 APK 的权限清单**，不能靠设备能上网来推断。
+
+---
+
+## 铁律 10：`use {}` 块内的同名局部变量会**遮蔽**外层变量
+
+> 来源：BUG-13 第二层根因（2026-10-26）
+
+```kotlin
+var totalBytes = existingBytes          // ← 外层
+okHttpClient.newCall(...).execute().use { response ->
+    var totalBytes = if (append) existingBytes else 0L   // ← 块内同名，遮蔽外层！
+    ...
+    totalBytes += read.toLong()          // 累加的是块内那个
+}
+return totalBytes                       // ← 返回的是外层那个（首次下载恒为 0）
+```
+
+Kotlin 允许块内同名变量**遮蔽**外层变量，不报错、不警告。后果链：
+「下载成功 → 返回值恒为 0 → 上层判定『文件过小』→ **删掉刚下好的文件** →
+下载永远无法成功，且失败原因是**假的**」。
+
+真机现场：LLM 权重 `.part` 一路写到 851,516,367 字节后被删除，界面提示
+「下载文件过小，可能为错误页」——**下载其实完全成功**。
+
+### 判据
+
+1. **同一个变量名在嵌套作用域里出现两次** → 一律视为 bug，无论编译器是否报警。
+2. 「返回累计值」的函数必须有一条**回归测试**断言返回值等于实际落盘字节数，
+   且该测试用**真实 HTTP 服务端**（本地 `ServerSocket` 即可）发几百字节，
+   不打真网。
+3. 用 `git diff` 审查时**不能只看「改了哪几行」**，要看**变量作用域是否变了**。
+
+**注**：Android 单元测试的编译 classpath **不含 `jdk.httpserver`**，
+`com.sun.net.httpserver.HttpServer` 在单测里不可用（报
+`Unresolved reference 'sun'`）。本地测试服务端请用 `java.net.ServerSocket` 手写，
+或引入 MockWebServer 依赖。
+
+---
+
+## 铁律 11：大文件下载必须有「分片重试 + 保留 `.part`」，并核对 HTTP 协议版本
+
+> 来源：BUG-13 第三层根因（2026-10-26）
+
+即使权限和代码逻辑都对，大文件下载仍可能**中途死掉**。本项目在同一个 bug 上
+连续踩了三层坑，每层都独立地把前一层修好后暴露出来：
+
+| 层 | 根因 | 表面症状 |
+|---|---|---|
+| 1 | manifest 漏 `INTERNET` 权限 | 目录建了、零字节、无任何报错 |
+| 2 | `use {}` 块内同名变量遮蔽外层变量 | 下到 851MB 后被删除，提示「可能为错误页」（**假的**） |
+| 3 | **HTTP/2 流控导致长连接 abort** | 下到 581MB 停滞 5 分半 → `SocketException: Software caused connection abort` |
+
+### 3.1 HTTP/2 对超大文件长连接不可靠
+
+真机堆栈直指协议层：
+```
+java.net.SocketException: Software caused connection abort
+    at okhttp3.internal.http2.Http2Writer.windowUpdate(Http2Writer.kt:253)
+    at okhttp3.internal.http2.Http2Connection$writeWindowUpdateLater...
+```
+
+**对照实验（同一台设备、同一份文件）**：
+
+| 方式 | 结果 |
+|---|---|
+| `curl -sL`（默认 HTTP/2） | 中途 `connection abort`，失败 |
+| `curl -sL --http1.1` | ✅ `http=200 size=1117320736 time=26.03s`（1.1GB 完整下完） |
+| `curl -sL -r 700000000-720000000` | ✅ `http=206 size=20000001`（服务端数据本身没问题） |
+
+**判据**：下载**大于几百 MB** 的资源时，OkHttp 客户端应显式
+`.protocols(listOf(Protocol.HTTP_1_1))`，除非有实测证据表明目标源在 HTTP/2 下稳定。
+
+### 3.2 失败时不得无条件删除 `.part`
+
+`catch` 块里一句 `partFile.delete()` 会把**已经下好的几百 MB 全部作废**，
+让每次网络抖动都变成「从头再来」。
+
+必须区分两类失败：
+
+| 类别 | 例子 | `.part` 处置 |
+|---|---|---|
+| **可恢复** | 连接中断、读超时、5xx | **保留**，下次用 Range 续传 |
+| **不可恢复** | HTTP 404、SHA-256 不符、体积异常 | 删除 |
+
+### 3.3 `retryOnConnectionFailure(true)` 不覆盖协议层错误
+
+OkHttp 的自动重试只处理**连接建立失败**与部分 IO 异常，**不处理** HTTP/2 流控
+abort 这类协议层错误。大文件下载必须自己做**应用层有限重试 + 指数退避**，
+且重试期间 UI 状态应保持 `DOWNLOADING`（不能闪回「未在下载」）。
+
+**判据**：任何「下载远端大文件」的功能，必须同时具备
+「强制 HTTP/1.1 + 有限重试 + 保留 `.part` + 失败原因可见」四件套。
+
+---
+
+## 案例复盘：BUG-13「无法下载端侧模型」的三层根因
+
+用户报障原文只有五个字：「无法下载端侧模型」。三层根因**逐层掩盖**，
+每修好一层就露出下一层——这是本项目迄今最典型的一次「症状不变、根因换层」。
+
+**排查路径（可复用的方法论）**：
+
+1. **先分清「有目录无文件」与「有文件不完整」**。
+   - 目录存在、零字节 → 怀疑**连接建立阶段**失败（权限/DNS/URL）。
+   - `.part` 存在且字节数很大 → 怀疑**传输中途**失败（协议/超时/服务端）。
+   这一次两者**都**发生了，因为是不同层的问题。
+2. **不要用 ADB shell 的网络测试来推断 App 的网络能力**（见铁律 9）。
+   本次 `adb shell curl` 返回 302 正常，差点让人直接排除网络因素。
+3. **失败必须留日志**。本次是先把 `ModelDownloader` 的日志补上，才在真机上
+   拿到那行 `Http2Writer.windowUpdate` 堆栈——**没有这行堆栈，第三层根因
+   根本无从定位**（前两层修好后现象仍是「下载失败」，但原因不明）。
+   静默失败不只是体验问题，它会**直接阻断排查**。
+
+**代价**：用户从报障到完全可用，经历了三轮「修复 → 复测 → 仍失败」。
+若第一轮就补齐了日志与错误透传，第三层根因**本可一次命中**。
+
+---
+
 ## 设计决策记录：`force = true` 先删后建，失败不恢复旧总结（既定语义，勿当 bug 修）
 
 **背景**：BUG-10 修复引入「已有非空总结则跳过」保护（防兜底扫描覆盖用户数据），
@@ -180,6 +329,64 @@ mergedOffset = sumOf(该片段之前所有片段的 durationMs) + (transcript.st
 **测试锁定点**：`SummarizeDayUseCaseTest.force=true 时当天无转写内容返回 E-4003
 且旧总结已被清空`——若未来有人把该用例改成「失败后恢复旧总结」，先读本条。
 
+---
+
+## Known Issue：快捷录音入口的「进程级 once guard」在服务被回收后会延迟一拍重建（已知，不修）
+
+**状态**：已知且**刻意不修**（主理人裁决，2026-10-25）。记录在此，防止几个月后被
+当成 bug 重新排查一遍。
+
+### 触发条件
+
+`MainActivity.bootstrapQuickRecordEntry()` 用一个**进程级**布尔标记
+（`QuickRecordEntryGuard`）保证「同一次进程内只调一次 `enterStandby()`」。
+
+该标记的生命周期 = **应用进程**的生命周期。而 `RecordingService` 在
+`AndroidManifest.xml` 中**未声明** `android:process`，与应用同进程。
+
+于是存在一种组合：**服务被回收，但应用进程仍存活**。
+
+具体路径：`RecordingService.onStartCommand` 的 `else` 分支是
+`if (!running && !standby) stopSelfSafely()`。`standby` 是服务实例的**内存字段**，
+START_STICKY 重启后是新实例，`running`/`standby` 均为 `false` ⇒ 走到
+`stopSelfSafely()` ⇒ 入口消失。此时应用进程若还活着，guard 仍是 claimed，
+**入口要等下一次冷启动才恢复**。
+
+附带影响：装 guard 之前，「旋转屏幕」这类 Activity 重建会顺手重建入口
+（误打误撞的自愈）；加了 guard 之后这条路也没了。这是 guard 的设计代价，不是 bug。
+
+### 为何不修（两个候选方案都被否）
+
+- **方案 B：把 guard 从「进程级一次」降级为「时间窗去抖」（如 5 秒）**
+  **解决不了核心场景**。去抖只保住「Activity 重建」那条自愈路径，而真正的洞是
+  「服务被回收但进程存活」——去抖对后者完全无效，还让 guard 从干净的「一次」语义
+  退化成时间窗语义。为低概率场景把语义弄模糊，不划算。
+- **方案 C：服务侧自保**（让 `else` 分支在「刚被回收重启」时重新进待命态，
+  而非 `stopSelfSafely()`）
+  **风险高于收益**。为治一个低概率洞去动 START_STICKY 的恢复语义，
+  属于在**主链路**上做高风险改动。不做。
+
+### 严重度判定：低
+
+- 前台服务是系统**最后**才回收的组件，且服务被回收时应用进程通常一同被杀；
+- 即便发生，四条重建路径可自愈：**开机**（`BootReceiver`）、**设置开关**
+  （`SettingsViewModel`）、**录音结束**（`onAudioLoopExited`）、
+  **下次打开 App**（`MainActivity` 首启，guard 随进程复位）；
+- 不丢数据、不误起服务（不触碰硬约束「开关关闭的用户永不被起服务」）。
+
+### 将来若要修，正确的切入点
+
+**服务侧感知自身存活**，而不是在 VM / Activity 层做「值比较去重」。
+
+具体说：把待命态的提升为**持久状态或可自恢复状态**，让 `RecordingService` 在
+START_STICKY 重启时能判断「我本应处于待命态」，从而主动重建入口。
+判据是——**入口的存在与否是服务的事实，不该由 Activity 的一次性引导动作来兜底**。
+
+**反模式（勿采用）**：在 `SettingsViewModel` 里比较新旧开关值再决定是否投递。
+服务进程被杀后入口需要重建，若 VM 因为「值没变（仍是 true）」而不投递，
+用户就再也等不到入口了。当前「无条件投递 + 服务侧幂等早退」
+（`handleEnterStandby` 首行 `if (running || paused || standby) return`）是正确的分层，
+去重在服务侧，不在调用侧。
 
 ---
 

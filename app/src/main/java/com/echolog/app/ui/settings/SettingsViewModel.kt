@@ -9,6 +9,7 @@ import com.echolog.app.ai.model.ModelKind
 import com.echolog.app.ai.model.ModelManager
 import com.echolog.app.ai.model.ModelState
 import com.echolog.app.core.common.Constants
+import com.echolog.app.core.util.EchoLog
 import com.echolog.app.core.util.FileUtils
 import com.echolog.app.data.media.StorageLocationManager
 import com.echolog.app.domain.model.PrivacyMode
@@ -16,6 +17,7 @@ import com.echolog.app.domain.model.RecordingMode
 import com.echolog.app.domain.model.RecordingSettings
 import com.echolog.app.domain.model.SensitivityLevel
 import com.echolog.app.domain.repository.SettingsRepository
+import com.echolog.app.domain.usecase.ServiceController
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +43,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val modelManager: ModelManager,
     private val storageLocationManager: StorageLocationManager,
+    private val serviceController: ServiceController,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -137,6 +140,35 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.setEncryption(enabled) }
     }
 
+    /**
+     * 待命态快捷录音入口（用户需求：锁屏/状态栏一键开始录音；默认开启）。
+     *
+     * 打开时若入口尚未建立（例如还没结束过一次录音、服务未在待命），
+     * 立即把常驻入口挂出来——否则「开关打开了却看不到入口」等同于设置静默失效。
+     * 关闭时由服务自行退出（服务在待命态监听本设置），无需此处投递。
+     *
+     * **顺序不可颠倒**：必须先 `settingsRepository.set...` 再 `enterStandby()`。
+     * 服务侧的待命监听是 `observeSettings().first { !it.quickRecordNotificationEnabled }`
+     * （`RecordingService.startQuickRecordSettingWatch`），若先拉服务再落盘，
+     * 服务会读到旧值 false 并立刻 `stopSelfSafely()`——用户刚打开开关入口就没了。
+     * 两句在同一协程内顺序执行，且 DataStore 的 `edit {}` 在返回前已 commit，
+     * 故这不是时序侥幸而是顺序保证。
+     *
+     * **失败不静默**（项目红线）：`enterStandby()` 失败时实现方已代发 alert 渠道
+     * 可见通知（用户会看到「快捷录音入口未建立」），此处补日志留存排查线索。
+     */
+    fun setQuickRecordNotificationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setQuickRecordNotificationEnabled(enabled)
+            if (enabled) {
+                serviceController.enterStandby().onFailure { failure ->
+                    // 不带 cause：Controller 内部已用完整堆栈打过一次，此处只留业务上下文
+                    EchoLog.w(TAG, "快捷入口建立失败：${failure.code} ${failure.message}")
+                }
+            }
+        }
+    }
+
     /** 刷新存储统计（音频目录体积 + 可用空间）。 */
     fun refreshStorage() {
         viewModelScope.launch {
@@ -150,6 +182,10 @@ class SettingsViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "SettingsViewModel"
     }
 }
 

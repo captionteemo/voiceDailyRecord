@@ -87,9 +87,37 @@ object Constants {
     const val CHANNEL_MONITOR = "channel_monitor"
     const val CHANNEL_PROGRESS = "channel_progress"
     const val CHANNEL_ALERT = "channel_alert"
+
+    /**
+     * 快捷录音入口渠道（用户需求：锁屏/状态栏一键开始录音）。
+     *
+     * **必须与 [CHANNEL_MONITOR] 分开**：监听渠道把锁屏可见性设为 PRIVATE
+     * （录音状态属隐私，锁屏上不展示内容），而快捷入口的目的是「锁屏可见」，
+     * 需要 PUBLIC。系统在锁屏上取「渠道可见性」与「通知自身可见性」中
+     * **更严格**的一方，故复用监听渠道会被降级为 PRIVATE 而达不到需求。
+     */
+    const val CHANNEL_QUICK_RECORD = "channel_quick_record"
+
+    /**
+     * 常驻通知 id：监听通知与快捷通知**共用**同一个 id。
+     *
+     * 由此两种通知**天然互斥**——「监听中 ↔ 待命」切换只是替换同一条通知的内容，
+     * 任何时刻状态栏/锁屏上只会有一条，不需要额外的取消逻辑。
+     */
     const val NOTIFICATION_ID_MONITOR = 1001
     const val NOTIFICATION_ID_PROGRESS = 1002
     const val NOTIFICATION_ID_ALERT = 1003
+
+    /**
+     * 快捷录音入口**建立失败**的提示通知 id（独立 id）。
+     *
+     * 为何不与 [NOTIFICATION_ID_ALERT] 共用：后者已被「中断恢复」
+     * （[buildRecoveryNotification][com.echolog.app.service.notify.NotificationHelper]）
+     * 与「快捷启动失败」共用，再复用会让两条不同含义的提示**互相顶掉**
+     * （同 id 的 `notify` 是替换语义）。入口建立失败是独立的一次性事件，
+     * 必须有自己的 id 才不会被后续提醒覆盖。
+     */
+    const val NOTIFICATION_ID_QUICK_ENTRY_FAILED = 1004
 
     // ── Intent Action（架构 7.1：com.echolog.app.action.*） ──
     const val ACTION_START_MONITORING = "com.echolog.app.action.START_MONITORING"
@@ -113,6 +141,24 @@ object Constants {
 
     /** 手动录音目标态（Boolean；缺省表示取反）。 */
     const val EXTRA_RECORDING_ON = "com.echolog.app.extra.RECORDING_ON"
+
+    /**
+     * 快捷开始录音（用户需求：锁屏/状态栏快捷入口）。
+     *
+     * 与 [ACTION_MANUAL_TOGGLE] 的区别：后者只在**手动模式**下翻转「正在录」标志
+     * （`RecordingService.handleManualToggle` 对非 MANUAL 模式直接 return），
+     * 不能用于「开始录音」；本动作走 [ACTION_START_MONITORING] 的完整建档链路
+     * （`StartMonitoringUseCase`），对全天/自动/模板/手动四种模式都成立。
+     */
+    const val ACTION_QUICK_START = "com.echolog.app.action.QUICK_START"
+
+    /**
+     * 进入待命态并显示快捷录音入口（用户需求：锁屏/状态栏一键开始录音）。
+     *
+     * 与 [ACTION_QUICK_START] 的分工：本动作只「把常驻入口建起来」（开机自恢复、
+     * 设置开关打开时），不启动音频循环；后者是用户点击入口后的开始录音动作。
+     */
+    const val ACTION_STANDBY = "com.echolog.app.action.STANDBY"
 
     // ── Worker 唯一工作名（架构 7.5） ──
     const val WORK_SETTLE_PREFIX = "settle-"
@@ -157,6 +203,15 @@ object Constants {
     const val ERROR_MODEL_DOWNLOAD = "E-6001"
     const val ERROR_MODEL_CHECKSUM = "E-6002"
     const val ERROR_SERVICE_KILLED = "E-7001"
+
+    /**
+     * 快捷录音入口**建立失败**（Android 8+ 后台启动限制 / 厂商 ROM 收紧）。
+     *
+     * 与 [ERROR_SERVICE_KILLED] 区分：后者是「服务运行中被系统杀掉」，
+     * 前者是「服务压根没起来」——用户表现为「设置里开关是开的，锁屏却没有入口」。
+     * 两者恢复路径也不同：前者需用户回应用内重新触发，后者由健康检查自动拉起。
+     */
+    const val ERROR_QUICK_ENTRY_FAILED = "E-7002"
 
     // ── 其他 ──
     const val DAY_ID_PATTERN = "yyyy-MM-dd"

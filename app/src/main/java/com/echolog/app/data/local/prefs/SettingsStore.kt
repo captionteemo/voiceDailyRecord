@@ -38,6 +38,7 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
  * - `privacy_ack`：隐私告知确认标记（FR-014）
  * - `sample_rate`：录音采样率（用户需求 3；默认 16000）
  * - `storage_tree_uri`：自选录音目录 SAF tree URI（空 = 应用内部目录）
+ * - `quick_record_notification_enabled`：待命态快捷录音入口开关（默认 true）
  *
  * 读损坏时回退默认偏好（IOException 视为空文件，其余异常上抛）。
  */
@@ -115,6 +116,11 @@ class SettingsStore(private val context: Context) {
         dataStore.edit { prefs -> prefs[Keys.RECORDING_MODE] = mode.name }
     }
 
+    /** 待命态快捷录音入口开关（用户需求：锁屏/状态栏一键开始录音；默认开启）。 */
+    suspend fun setQuickRecordNotificationEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[Keys.QUICK_RECORD_NOTIFICATION_ENABLED] = enabled }
+    }
+
     private fun Preferences.toRecordingSettings(): RecordingSettings = RecordingSettings(
         sensitivity = SensitivityLevel.fromNameOrDefault(this[Keys.SENSITIVITY]),
         silenceDurationMs = this[Keys.SILENCE_DURATION_MS] ?: Constants.DEFAULT_SILENCE_MS,
@@ -128,6 +134,7 @@ class SettingsStore(private val context: Context) {
         sampleRate = this[Keys.SAMPLE_RATE] ?: Constants.DEFAULT_SAMPLE_RATE,
         storageTreeUri = this[Keys.STORAGE_TREE_URI],
         recordingMode = RecordingMode.fromNameOrDefault(this[Keys.RECORDING_MODE]),
+        quickRecordNotificationEnabled = this[Keys.QUICK_RECORD_NOTIFICATION_ENABLED] ?: true,
     )
 
     private object Keys {
@@ -143,5 +150,7 @@ class SettingsStore(private val context: Context) {
         val SAMPLE_RATE = intPreferencesKey("sample_rate")
         val STORAGE_TREE_URI = stringPreferencesKey("storage_tree_uri")
         val RECORDING_MODE = stringPreferencesKey("recording_mode")
+        val QUICK_RECORD_NOTIFICATION_ENABLED =
+            booleanPreferencesKey("quick_record_notification_enabled")
     }
 }

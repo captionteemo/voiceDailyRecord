@@ -24,11 +24,16 @@ import javax.inject.Singleton
 /**
  * 通知构建与发送（架构 2.3/7.5）。
  *
- * 三类通知：
+ * 四类通知：
  * 1. [buildMonitorNotification] 常驻监听通知（channel_monitor，LOW，ongoing 不可滑掉，FR-013）：
  *    含「正在录音」文案 + 隐私提示 + 打点（RemoteInput 备注）/结束快捷操作；
- * 2. [buildProgressNotification] 结算/下载进度通知（channel_progress，LOW）；
- * 3. [buildRecoveryNotification] 中断恢复高优先级通知（channel_alert，HIGH，NFR-003 第三层防线）。
+ * 2. [buildQuickRecordNotification] 待命态快捷录音通知（channel_quick_record，LOW，
+ *    ongoing + 锁屏可见）：未录音时的一键入口，只有「开始录音」一个操作；
+ * 3. [buildProgressNotification] 结算/下载进度通知（channel_progress，LOW）；
+ * 4. [buildRecoveryNotification] 中断恢复高优先级通知（channel_alert，HIGH，NFR-003 第三层防线）。
+ *
+ * 第 1、2 类共用 [Constants.NOTIFICATION_ID_MONITOR]，因此**互斥**：
+ * 「监听中 ↔ 待命」只是替换同一条通知的内容，任一时刻只显示一条。
  */
 @Singleton
 class NotificationHelper @Inject constructor(
@@ -136,6 +141,82 @@ class NotificationHelper @Inject constructor(
             )
             .build()
 
+    // ── 快捷录音入口（用户需求：锁屏/状态栏一键开始录音） ──
+
+    /**
+     * 待命态快捷通知：低优先级、**ongoing（不可滑掉）**、**锁屏可见**。
+     *
+     * 与 [buildMonitorNotification] 共用 [Constants.NOTIFICATION_ID_MONITOR]，
+     * 因此「监听中 / 待命」任一时刻只会有一条通知（互斥由通知 id 保证，
+     * 不需要额外的取消逻辑）。
+     *
+     * 只提供「开始录音」一个操作：待命态没有进行中的录音，暂停/继续/打点/结束
+     * 均不适用——既有操作的语义保持不变。
+     */
+    fun buildQuickRecordNotification(dayId: String): Notification =
+        NotificationCompat.Builder(context, Constants.CHANNEL_QUICK_RECORD)
+            .setSmallIcon(R.drawable.ic_notification_record)
+            .setContentTitle(context.getString(R.string.notify_quick_record_title))
+            .setContentText(context.getString(R.string.notify_quick_record_text))
+            // 常驻：不可滑掉（与监听通知一致，误滑就会失去入口）
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            // 锁屏可见：渠道已设为 PUBLIC，此处再显式声明
+            // （系统取「渠道可见性」与「通知可见性」中**更严格**的一方，两者都要设）
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(openMainActivityIntent(dayId))
+            .addAction(buildQuickStartAction(dayId))
+            .build()
+
+    /**
+     * 快捷入口启动失败提示（项目红线：未授权/失败不得静默失败，必须给可见提示）。
+     *
+     * 走 [Constants.CHANNEL_ALERT] 高优先级渠道，点击回到应用内处理
+     * （缺麦克风权限时由应用内授权流兜底）。
+     */
+    fun buildQuickStartFailedNotification(reason: String): Notification =
+        NotificationCompat.Builder(context, Constants.CHANNEL_ALERT)
+            .setSmallIcon(R.drawable.ic_notification_alert)
+            .setContentTitle(context.getString(R.string.notify_quick_start_failed_title))
+            .setContentText(context.getString(R.string.notify_quick_start_failed_text, reason))
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setAutoCancel(true)
+            .setContentIntent(openMainActivityIntent(TimeUtils.todayDayId()))
+            .build()
+
+    /**
+     * 快捷入口**建立失败**提示（项目红线：入口没建起来不得静默）。
+     *
+     * 与 [buildQuickStartFailedNotification] 的分工：
+     * - 那条是用户点了入口、录音**没起来**；
+     * - 本条是入口**本身没建起来**——设置里开关显示已开、锁屏却没有入口。
+     *
+     * 走 [Constants.CHANNEL_ALERT]（IMPORTANCE_HIGH，会横幅提醒），并占用独立 id
+     * [Constants.NOTIFICATION_ID_QUICK_ENTRY_FAILED] 以免与「中断恢复」提示互相顶掉。
+     *
+     * **「不可滑掉」两个开关都要设**（口径勿混淆）：
+     * - `setAutoCancel(false)` —— 只管「点击后不自动消失」；
+     * - `setOngoing(true)` —— 才真正禁止左右滑动删除。
+     * 一划就消失的提醒与被静默掉没有区别，故两条都设。
+     *
+     * **ongoing 的代价与兜底**：ongoing 通知用户滑不掉，只能由应用主动 cancel。
+     * 为免它变成一条清不掉的常驻通知，入口**成功**建立时
+     * （`RecordingService.handleEnterStandby`）会 cancel 本 id ——
+     * 提醒的生命周期 = 「入口处于未建立状态」的持续时间，语义自洽。
+     */
+    fun buildQuickEntryFailedNotification(reason: String): Notification =
+        NotificationCompat.Builder(context, Constants.CHANNEL_ALERT)
+            .setSmallIcon(R.drawable.ic_notification_alert)
+            .setContentTitle(context.getString(R.string.notify_quick_entry_failed_title))
+            .setContentText(context.getString(R.string.notify_quick_entry_failed_text, reason))
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(openMainActivityIntent(TimeUtils.todayDayId()))
+            .build()
+
     // ── 发送 / 取消 ──
 
     fun notify(id: Int, notification: Notification) {
@@ -210,6 +291,34 @@ class NotificationHelper @Inject constructor(
             resumeServiceIntent(dayId),
         )
             .build()
+
+    /**
+     * 「开始录音」操作（快捷入口）：以 [Constants.ACTION_QUICK_START] 投递
+     * [RecordingService]，由服务复用 `StartMonitoringUseCase` 建档并重启音频循环。
+     *
+     * 用 [PendingIntent.getForegroundService]（与 [resumeServiceIntent] 同款）：
+     * - 待命态下服务**本就在前台**，这里只是投递动作，不存在后台启动问题；
+     * - 即便服务已被系统回收，通知点击属用户主动触发，可合法启动前台服务
+     *   （Android 12+ 的兜底路径，见 [buildRecoveryNotification] 的同款注释）。
+     */
+    private fun buildQuickStartAction(dayId: String): NotificationCompat.Action {
+        val intent = Intent(context, RecordingService::class.java).apply {
+            action = Constants.ACTION_QUICK_START
+            putExtra(Constants.EXTRA_DAY_ID, dayId)
+        }
+        val pendingIntent = PendingIntent.getForegroundService(
+            context,
+            REQUEST_CODE_QUICK_START,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Action.Builder(
+            R.drawable.ic_notification_record,
+            context.getString(R.string.notify_action_start_record),
+            pendingIntent,
+        )
+            .build()
+    }
 
     /** 打点操作：带 RemoteInput 备注框（可跳过，架构 4.1 PRD 4.1）。 */
     private fun buildMarkerAction(dayId: String): NotificationCompat.Action {
@@ -294,5 +403,6 @@ class NotificationHelper @Inject constructor(
         private const val REQUEST_CODE_STOP = 2004
         private const val REQUEST_CODE_PAUSE = 2005
         private const val REQUEST_CODE_MANUAL_RECORD = 2006
+        private const val REQUEST_CODE_QUICK_START = 2007
     }
 }

@@ -75,6 +75,15 @@ fun ModelDownloadScreen(
         viewModel.consumeMessage()
     }
 
+    // 下载失败原因（动态文本）：**key 必须包含它**，否则新增错误不会触发 Snackbar。
+    // 单独一个 LaunchedEffect 而不是与 messageRes 合并——两者的 key 类型不同
+    //（Int? vs String?），合并会导致其中一个永远不触发。
+    LaunchedEffect(state.errorMessage) {
+        val errorMessage = state.errorMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(errorMessage)
+        viewModel.consumeErrorMessage()
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -182,6 +191,15 @@ private fun ModelRowCard(
                     text = stringResource(R.string.model_size_hint, row.sizeHint),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // 失败原因（真实原因文本）：行内常驻显示——
+            // 即使用户错过 Snackbar，进页面也能看到「为什么失败」。
+            row.error?.takeIf { it.isNotBlank() }?.let { error ->
+                Text(
+                    text = stringResource(R.string.model_error_reason, error),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
                 )
             }
             if (row.state == ModelState.DOWNLOADING) {

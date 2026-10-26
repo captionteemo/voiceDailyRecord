@@ -70,4 +70,12 @@ data class RecordingSettings(
     val storageTreeUri: String? = null,
     /** 录音模式（用户需求 4，默认自动录音）。 */
     val recordingMode: RecordingMode = RecordingMode.AUTO_VAD,
+
+    /**
+     * 未录音时常驻「开始录音」快捷入口（用户需求：锁屏/状态栏一键开始录音）。
+     *
+     * 开启（默认）：结束录音后服务保持前台待命，通知切换为快捷入口；
+     * 关闭：恢复现状行为（结束即撤掉通知）。
+     */
+    val quickRecordNotificationEnabled: Boolean = true,
 )

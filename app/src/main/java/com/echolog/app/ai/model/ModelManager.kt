@@ -3,14 +3,18 @@ package com.echolog.app.ai.model
 import android.content.Context
 import com.echolog.app.core.common.ApplicationScope
 import com.echolog.app.core.common.IoDispatcher
+import com.echolog.app.core.util.EchoLog
 import com.echolog.app.core.util.FileUtils
 import com.echolog.app.domain.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
@@ -51,6 +55,35 @@ class ModelManager @Inject constructor(
 
     /** 模型状态流（MISSING/DOWNLOADING/READY/ERROR）。 */
     val modelStates: StateFlow<Map<ModelKind, ModelState>> = _modelStates.asStateFlow()
+
+    /**
+     * 各模型**最近一次**下载失败的原因（kind → 原因文本）。
+     *
+     * **为什么用状态而不是一次性事件流**：失败可能发生在**用户不在模型页**的时候
+     * （启动时自动下载、后台 [com.echolog.app.work.ModelDownloadWorker] 下载）。
+     * 若只靠事件流（replay=0），页面打开后再订阅时事件早已发过，原因就丢了 ——
+     * 用户只看到一个「ERROR」徽标却不知道原因，等于给了半截信息。
+     * 用状态保存则「最近的失败原因」**始终可查**，进页面即见。
+     *
+     * 原因文本来自 [ModelDownloader] 的 `EchoResult.Failure.message`，是**真实原因**
+     * （如「下载失败：Connection reset」「HTTP 403」「下载文件过小（1.2 KB），可能为错误页」），
+     * 不做编造、不用占位符。
+     */
+    private val _lastErrors = MutableStateFlow<Map<ModelKind, String>>(emptyMap())
+    val lastErrors: StateFlow<Map<ModelKind, String>> = _lastErrors.asStateFlow()
+
+    /**
+     * 下载失败的**一次性事件**流（原因文本）。
+     *
+     * 与 [lastErrors] 配套：[lastErrors] 负责「随时可查」，本流负责「刚刚失败了」
+     * 的即时反馈（界面弹 Snackbar）。二者缺一不可：只有事件流会丢原因，
+     * 只有状态则失败当下没有即时提示。
+     */
+    private val _errorEvents = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 8,
+    )
+    val errorEvents: SharedFlow<String> = _errorEvents
 
     init {
         refreshStates()
@@ -104,26 +137,49 @@ class ModelManager @Inject constructor(
                 val targetDir = dirOf(entry.kind)
                 // 1) 已就绪则跳过（体积门槛达标），避免重复下载 1GB+ 权重
                 if (filesReady(targetDir, entry)) {
+                    clearError(entry.kind)
                     publishState(entry.kind, ModelState.READY)
                     continue
                 }
                 // 2) 缺失/损坏 → 从 ModelScope 下载（伴随文件如 tokens.txt 同步下载）
                 publishState(entry.kind, ModelState.DOWNLOADING)
+                // 新的尝试开始 → 清掉上一轮的失败原因，避免旧原因与新状态并存误导用户
+                clearError(entry.kind)
+                EchoLog.i(TAG, "开始确保模型就绪 kind=${entry.kind} 目录=${targetDir.absolutePath}")
                 val result = downloader.download(entry, targetDir) { progress ->
                     // 下载进度经状态流之外的通道透出（T05 ModelDownloadScreen 可扩展
                     // 为带进度的状态；当前进度事件保留在下载器回调内）
                     _downloadProgress.tryEmit(entry.kind to progress)
                 }
                 if (result.isSuccess) {
+                    clearError(entry.kind)
                     publishState(entry.kind, ModelState.READY)
                 } else {
                     allReady = false
+                    // 失败原因**不得丢弃**（项目红线）：此前这里只 publishState(ERROR)，
+                    // 用户在界面上只看到一个「ERROR」徽标，不知道到底为什么失败。
+                    val failure = result.failureOrNull()
+                    val reason = failure?.message?.takeIf { it.isNotBlank() }
+                        ?: "下载失败（未提供原因）"
+                    recordError(entry.kind, failure?.code, reason)
                     publishState(entry.kind, ModelState.ERROR)
                 }
             }
             settingsRepository.setModelsReady(allReady)
             publishStates()
         }
+    }
+
+    /** 记录一次下载失败：写日志 + 存状态（可查）+ 发事件（即时提示）。 */
+    private fun recordError(kind: ModelKind, code: String?, reason: String) {
+        EchoLog.e(TAG, "模型下载失败 kind=$kind code=${code ?: "-"} 原因=$reason")
+        _lastErrors.update { it + (kind to reason) }
+        _errorEvents.tryEmit(reason)
+    }
+
+    /** 清除某模型的失败原因（下载开始或成功时调用）。 */
+    private fun clearError(kind: ModelKind) {
+        _lastErrors.update { it - kind }
     }
 
     /** 下载进度事件流（kind → 0~100）。 */
@@ -169,6 +225,10 @@ class ModelManager @Inject constructor(
     private fun dirOf(kind: ModelKind): File = when (kind) {
         ModelKind.ASR -> FileUtils.asrModelDir(context)
         ModelKind.LLM -> FileUtils.llmModelDir(context)
+    }
+
+    companion object {
+        private const val TAG = "ModelManager"
     }
 }
 

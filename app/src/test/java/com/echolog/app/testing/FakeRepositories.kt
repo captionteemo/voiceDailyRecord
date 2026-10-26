@@ -411,6 +411,10 @@ class FakeSettingsRepository : SettingsRepository {
         settingsFlow.value = settingsFlow.value.copy(storageTreeUri = treeUri)
     }
 
+    override suspend fun setQuickRecordNotificationEnabled(enabled: Boolean) {
+        settingsFlow.value = settingsFlow.value.copy(quickRecordNotificationEnabled = enabled)
+    }
+
     override suspend fun setRecordingMode(mode: RecordingMode) {
         settingsFlow.value = settingsFlow.value.copy(recordingMode = mode)
     }

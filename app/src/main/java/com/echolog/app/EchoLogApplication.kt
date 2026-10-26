@@ -112,8 +112,22 @@ class EchoLogApplication : Application(), Configuration.Provider {
             setShowBadge(false)
         }
 
+        // 快捷录音入口（用户需求：锁屏/状态栏一键开始录音）。
+        // 与监听渠道分开的**唯一理由**是锁屏可见性：监听渠道刻意设为 PRIVATE
+        // （录音状态属隐私），而快捷入口的价值就在于锁屏上可见可点——
+        // 系统取「渠道可见性」与「通知可见性」中更严格的一方，故必须独立成渠道。
+        val quickRecordChannel = NotificationChannel(
+            Constants.CHANNEL_QUICK_RECORD,
+            getString(R.string.channel_quick_record_name),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = getString(R.string.channel_quick_record_desc)
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+
         notificationManager.createNotificationChannels(
-            listOf(monitorChannel, progressChannel, alertChannel),
+            listOf(monitorChannel, progressChannel, alertChannel, quickRecordChannel),
         )
     }
 }

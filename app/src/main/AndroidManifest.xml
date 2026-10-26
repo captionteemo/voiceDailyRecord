@@ -2,6 +2,28 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+        网络访问（模型权重下载，FR-012）。
+
+        **必声明项，漏了会导致「无法下载端侧模型」且没有任何报错**：
+        INTERNET 虽是 normal 权限（安装即授予、无需运行时申请），但**必须显式写在
+        manifest 里**才会被授予 —— 系统不会因为 App 里用了 OkHttp 就自动补上。
+        漏声明时 App 进程的所有 socket 直接抛
+        `java.net.SocketException: Permission denied`（不是 UnknownHostException），
+        且 `NetworkSecurityPolicy.isCleartextTrafficPermitted` 之类的检查都过不去。
+
+        症状极具迷惑性（真机实测）：
+        - `files/models/asr/`、`files/models/llm/` 目录**被创建了**（建目录不需网络）
+          但里面**零字节**（socket 在建立连接阶段就断，一个字节都写不进去）；
+        - ADB shell 里 `ping modelscope.cn` / `curl` **都通** —— 那是 shell 进程
+          自己的权限，与 App 进程无关，**用 shell 测网络无法证伪 App 能否联网**；
+        - UI 上只有「下载失败，请重试」，看不到任何原因（静默失败）。
+
+        教训：验证「App 能否联网」必须看**装机后的 APK 权限**
+        （`aapt2 dump permissions app-debug.apk`），不能只看设备能不能上网。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- 音频采集（FR-001/FR-002） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 

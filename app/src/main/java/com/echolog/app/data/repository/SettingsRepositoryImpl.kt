@@ -60,4 +60,7 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setRecordingMode(mode: RecordingMode) =
         settingsStore.setRecordingMode(mode)
+
+    override suspend fun setQuickRecordNotificationEnabled(enabled: Boolean) =
+        settingsStore.setQuickRecordNotificationEnabled(enabled)
 }
