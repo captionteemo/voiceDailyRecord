@@ -63,7 +63,15 @@
       故此处只陈述**真正发生的事**：权限可能失效 ⇒ 通知无法更新。
     -->
     <string name="notify_monitor_refresh_failed_title">麦克风权限可能已失效</string>
-    <string name="notify_monitor_refresh_failed_text">常驻通知无法更新，录音状态请以应用内显示为准。点击可重新尝试。</string>
+    <string name="notify_monitor_refresh_failed_text">常驻通知无法更新，录音状态请以应用内显示为准。点击打开应用确认权限。</string>
+
+    <!--
+      前台服务被系统拒绝（startForeground 失败）时的原因文案。
+      与 notify_quick_start_reason_permission（「缺少麦克风权限」）区分：
+      那条用于「权限确定缺失」，本条用于「系统拒绝了 microphone 型前台服务」，
+      原因可能是权限被撤销、厂商 ROM 收紧、或 FGS 类型校验不通过 —— 故附上真实异常。
+    -->
+    <string name="notify_foreground_rejected_reason">系统拒绝建立后台录音服务（%1$s）。请确认麦克风权限已授予后重试。</string>
 
     <!-- Worker 结算阶段（channel_progress 通知标题） -->
     <string name="worker_stage_prepare">准备结算</string>

@@ -605,6 +605,19 @@ class RecordingService : Service() {
      * 两者不一致 ⇒ 开机自恢复时可能走进与实际状态不符的分支。
      * 本轮**不扩大改动范围**统一它（会牵动 BootReceiver 与其单测），
      * 仅在此登记为待办。
+     *
+     * ## 为什么第 2 步（查持久化状态）放在 `startForeground` **之后**
+     *
+     * 硬约束是 ANSS（Android 10+ App Startup）：`startForegroundService` 之后
+     * 5 秒内必须进前台，否则系统抛 `ForegroundServiceDidNotStartInTimeException`
+     * ⇒ 进程崩溃。而查「DB 里有没有监听中的录音日」是一次 IO 读取，
+     * **耗时不可控**（磁盘繁忙时可达数百毫秒，极端情况更久）。
+     * 若把查库提到建前台之前，一旦这次 IO 慢到超过 5 秒时限 ⇒ 直接崩溃。
+     *
+     * 所以顺序必须是：**先同步 `startForeground`（满足时限）→ 再异步查库 →
+     * 若库里的事实要求换一种通知，再换回去**。
+     * 「先查库再决定发什么通知」在语义上更自然，但在这里是**拿崩溃换语义**，
+     * 不可接受。故宁可让通知短暂显示「待命」，也不冒崩溃风险。
      */
     private fun handleEnterStandby() {
         if (running || paused || standby) return
@@ -691,6 +704,55 @@ class RecordingService : Service() {
             Constants.NOTIFICATION_ID_ALERT,
             notificationHelper.buildQuickStartFailedNotification(reason),
         )
+    }
+
+    /**
+     * 「常驻通知暂时无法更新」的可见提示（[Constants.NOTIFICATION_ID_ALERT]）。
+     *
+     * ## 触发场景（与 [handleMonitorNotificationFailure] 是两条不同的路径）
+     *
+     * - 本方法：[handleStart] 里「换入监听通知失败，但服务已持有前台身份」——
+     *   此时**录音会照常开始**，只是这一次通知没能换成监听态；
+     * - [handleMonitorNotificationFailure]：监听态下**周期刷新**通知失败。
+     *
+     * 两条路径的失败事实相同（`startForeground` 被系统拒绝，最常见原因是
+     * `RECORD_AUDIO` 在监听期间被撤销），故**共用同一文案**
+     * （[NotificationHelper.buildMonitorRefreshFailedNotification]），
+     * 避免两条路径给用户两种说法。
+     *
+     * ## 为什么不能复用「记录已中断，点击恢复后台录音监听」
+     *
+     * 那条文案（[NotificationHelper.buildRecoveryNotification]）**断言**录音已中断。
+     * 而本通知的触发事实只是「`startForeground` 被系统拒绝」——此刻
+     * **音频循环可能仍在跑、录音可能仍在继续**。断言「已中断」是说过头的话
+     * （项目红线：通知文案不得断言用户看不到的事实，BUG-13 教训）。
+     *
+     * 故只陈述能确定的事：权限可能已失效 ⇒ 通知无法更新，
+     * 录音状态以应用内显示为准。
+     *
+     * ## 为什么与 [handleMonitorNotificationFailure] 不合并成一个方法
+     *
+     * 两者的**限流语义不同**：[handleMonitorNotificationFailure] 走
+     * 「一段连续失败只提示一次」的限流（[monitorNotificationFailureNotified]，
+     * 成功后复位）；而本方法对应的是**一次性的状态转换事件**
+     * （冷启动换入监听通知失败），不该与周期刷新的限流标志互相干扰。
+     *
+     * ## 走独立 id [Constants.NOTIFICATION_ID_ALERT]（与常驻通知 1001 不同）
+     *
+     * 用 `notify()` 覆盖前台服务通知会剥掉 FOREGROUND_SERVICE flag（铁律 12）——
+     * 那正是本轮修复的缺陷本身，绝不能在自己的修复里再犯一次。
+     */
+    private fun notifyMonitorRefreshFailed() {
+        // 提示发不出去也不能影响主链路（铁律 5）：此处位于 [handleStart] 的
+        // 同步路径上，未捕获的异常会从 onStartCommand 冒泡 ⇒ 进程崩溃。
+        runCatching {
+            notificationHelper.notify(
+                Constants.NOTIFICATION_ID_ALERT,
+                notificationHelper.buildMonitorRefreshFailedNotification(dayId.orEmpty()),
+            )
+        }.onFailure { throwable ->
+            EchoLog.w(TAG, "发送「通知无法更新」提示失败（不影响主链路）", throwable)
+        }
     }
 
     /**
@@ -1135,15 +1197,42 @@ class RecordingService : Service() {
      *
      * 否则关闭开关后常驻通知依旧存在（且要等下一次录音结束才消失）——
      * 属于「设置项静默失效」，与项目红线冲突。
+     *
+     * ## 为什么不用 `runCatching`（项目约定）
+     *
+     * `runCatching` 会把**两种**东西一起吞掉：
+     * 1. [CancellationException] —— 取消信号被吞 ⇒ 破坏结构化并发，
+     *    协程会在「已取消」的状态下继续往下走（项目既有约定，见
+     *    `RegenerateSummaryUseCase` / `ModelDownloader`）；
+     * 2. **真实的读取失败**（DataStore IO 异常）—— 本协程就此静默死掉，
+     *    「用户关闭开关 ⇒ 服务自行退出」这条行为**静默失效**
+     *    （设置项静默失效 = 项目红线）。
+     *
+     * 故手写 try/catch：取消原样抛出，真实失败**记日志**（让排障看得见）。
      */
     private fun startQuickRecordSettingWatch() {
         quickRecordWatchJob?.cancel()
         quickRecordWatchJob = scope.launch(ioDispatcher) {
-            runCatching {
+            try {
                 settingsRepository.observeSettings()
                     .first { !it.quickRecordNotificationEnabled }
-                standby = false
+            } catch (cancellation: CancellationException) {
+                // 取消不是「开关被关闭」，必须原样抛出（见上方 KDoc）。
+                throw cancellation
+            } catch (throwable: Throwable) {
+                // 读不到设置 ⇒ 不知道开关状态 ⇒ 保持待命（不擅自退出服务），
+                // 但必须留日志，否则「开关关了服务却不退」将无从排查。
+                EchoLog.w(TAG, "监听快捷入口开关失败，保持待命态", throwable)
+                return@launch
+            }
+            // 开关已关闭 ⇒ 待命入口已无意义，服务自行退出。
+            standby = false
+            try {
                 stopSelfSafely()
+            } catch (throwable: Throwable) {
+                // 收尾动作失败不得中断主链路（铁律 5）：撤前台/停服务失败时
+                // 也不能让协程把异常抛到作用域外（那会变成进程崩溃）。
+                EchoLog.w(TAG, "快捷入口开关已关闭，但退出服务失败", throwable)
             }
         }
     }
@@ -1288,8 +1377,11 @@ class RecordingService : Service() {
      *   假文案教训（当时的假原因是「可能为错误页」，实际是权限问题）。
      *   新文案只陈述**真正发生的事**：权限可能失效 ⇒ 通知无法更新，
      *   并提示「录音状态以应用内显示为准」——不对录音是否中断下结论；
-     * - 带**可点击恢复**动作（`ACTION_RESUME`）——用户在系统设置里补回麦克风权限后
-     *   点一下即可重试，无需重启应用；
+     * - 点击**只打开应用**（不挂 `ACTION_RESUME`）：若挂上，用户点一下提示
+     *   可能经 `handleStart` 走到 `stopSelfSafely()` 把服务杀掉
+     *   （麦克风权限已撤销时 `hasRecordAudioPermission()` 返回 false），
+     *   与本轮红线「监听态失败 ⇒ 绝不能停服务」冲突。详见
+     *   [NotificationHelper.buildMonitorRefreshFailedNotification] 的 KDoc；
      * - 走 [Constants.NOTIFICATION_ID_ALERT]（独立 id），**不能**复用
      *   [Constants.NOTIFICATION_ID_MONITOR]——用 `notify()` 覆盖前台服务通知会剥掉
      *   FOREGROUND_SERVICE flag（这正是本轮修复的缺陷本身）。
@@ -1298,15 +1390,8 @@ class RecordingService : Service() {
         EchoLog.w(TAG, "刷新监听常驻通知失败（保持服务运行，不中断录音）", error)
         if (monitorNotificationFailureNotified) return
         monitorNotificationFailureNotified = true
-        runCatching {
-            notificationHelper.notify(
-                Constants.NOTIFICATION_ID_ALERT,
-                notificationHelper.buildMonitorRefreshFailedNotification(dayId.orEmpty()),
-            )
-        }.onFailure { throwable ->
-            // 提示发不出去也不能影响主链路（此时正在录音，绝不能因提示失败而崩）。
-            EchoLog.w(TAG, "发送「麦克风权限可能已失效」提示失败", throwable)
-        }
+        // 复用统一出口，避免同一条通知出现两处发送逻辑（分叉 = 后续改文案必漏一处）。
+        notifyMonitorRefreshFailed()
     }
 
     /**

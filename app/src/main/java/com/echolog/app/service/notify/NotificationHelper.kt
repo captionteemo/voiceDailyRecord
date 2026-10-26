@@ -162,6 +162,26 @@ class NotificationHelper @Inject constructor(
      * 同样走 [Constants.CHANNEL_ALERT] + 独立通知 id，**不覆盖前台服务通知**
      * （用 `notify()` 覆盖 id=1001 会剥掉 `FOREGROUND_SERVICE` flag，
      * 那正是本轮修复的缺陷本身，见铁律 12）。
+     *
+     * ## 为什么点击动作是「打开应用」而不是「恢复监听」
+     *
+     * 曾考虑过给这条通知挂 `ACTION_RESUME`（点一下直接重试），**已否决**，
+     * 理由是它会引入一个「杀服务的按钮」：
+     *
+     * `ACTION_RESUME` → [com.echolog.app.service.RecordingService.handleStart]
+     * → 若此刻麦克风权限已被撤销，`hasRecordAudioPermission()` 返回 false
+     * → 走 `notifyQuickStartFailed` + `stopSelfSafely()` ⇒ **服务被杀**。
+     *
+     * 而本通知恰恰在「权限可能已失效」时最常出现 ⇒ 用户点一下提示，
+     * 反而把正在监听的服务弄死。这与本轮的核心红线
+     * 「监听态失败 ⇒ 绝不能停服务」直接冲突。
+     *
+     * 另：服务**本身每 1 秒自动重试**刷新通知
+     * （`refreshMonitorNotificationThrottled` → `updateForegroundNotification`），
+     * 用户权限补回后无需手动点任何按钮，通知会自己恢复 ⇒ 手动「重试」是冗余动作。
+     *
+     * 所以点击只做一件事：**打开应用**，让用户看到应用内的真实录音状态、
+     * 去系统设置确认权限。绝不通过点击路径影响服务生命周期。
      */
     fun buildMonitorRefreshFailedNotification(dayId: String): Notification =
         NotificationCompat.Builder(context, Constants.CHANNEL_ALERT)
@@ -170,13 +190,8 @@ class NotificationHelper @Inject constructor(
             .setContentText(context.getString(R.string.notify_monitor_refresh_failed_text))
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .setAutoCancel(true)
-            // 用户点击通知 = 用户主动触发，可合法拉起前台服务（Android 12+ 兜底路径）
-            .setContentIntent(resumeServiceIntent(dayId))
-            .addAction(
-                R.drawable.ic_notification_monitor,
-                context.getString(R.string.notify_action_resume),
-                resumeServiceIntent(dayId),
-            )
+            // 只打开应用，不触发任何服务动作（理由见上方 KDoc）
+            .setContentIntent(openMainActivityIntent(dayId))
             .build()
 
     // ── 快捷录音入口（用户需求：锁屏/状态栏一键开始录音） ──
@@ -222,38 +237,6 @@ class NotificationHelper @Inject constructor(
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .setAutoCancel(true)
             .setContentIntent(openMainActivityIntent(TimeUtils.todayDayId()))
-            .build()
-
-    /**
-     * 「常驻通知暂时无法更新」提示（channel_alert）。
-     *
-     * ## 为什么不能复用 [buildRecoveryNotification]
-     *
-     * 那条的文案是「记录已中断，点击恢复后台录音监听」——它**断言**录音已经中断。
-     * 而本通知的触发场景是「`startForeground` 被系统拒绝」（最常见原因是麦克风权限
-     * 在监听期间被撤销），此刻**音频循环可能仍在跑、录音可能仍在继续**：
-     * 断言「已中断」属于**说过头的话**（项目红线：通知文案不得断言用户看不到的事实）。
-     *
-     * 故本条只陈述**能确定的事实**：
-     * 1. 系统拒绝了这次通知更新；
-     * 2. 可能的原因之一是麦克风权限被撤销；
-     * 3. 录音是否真的中断以应用内状态为准（服务**不会**因为通知失败而自杀）。
-     *
-     * 点击动作是「打开应用」（[openMainActivityIntent]）而不是「恢复监听」——
-     * 录音若还在跑，「恢复监听」是无意义甚至有害的（会重复启动监听链路）；
-     * 用户需要做的是去系统/应用内确认麦克风权限。
-     *
-     * `setAutoCancel(true)`：这是一次性提示（服务侧对同一段连续失败只发一次），
-     * 不该变成滑不掉的常驻通知。
-     */
-    fun buildMonitorRefreshFailedNotification(dayId: String): Notification =
-        NotificationCompat.Builder(context, Constants.CHANNEL_ALERT)
-            .setSmallIcon(R.drawable.ic_notification_alert)
-            .setContentTitle(context.getString(R.string.notify_monitor_refresh_failed_title))
-            .setContentText(context.getString(R.string.notify_monitor_refresh_failed_text))
-            .setCategory(NotificationCompat.CATEGORY_ERROR)
-            .setAutoCancel(true)
-            .setContentIntent(openMainActivityIntent(dayId))
             .build()
 
     /**
