@@ -650,6 +650,11 @@ class RecordingService : Service() {
             return
         }
         standby = true
+        // 入口已建立 ⇒ 业务上「没在录」，UI 必须同步反映（见 resetServiceStateToIdle 的 KDoc）。
+        // 必须放在 scope.launch **之前**：协程块内若抛 CancellationException 会原样上抛，
+        // 复位写在块内就有漏复位的路径。若核对结果是有监听日，handleStart 会重新
+        // 置为 MONITORING，本复位不会留下错误状态。
+        resetServiceStateToIdle()
         // 第 2 步：异步核对持久化状态（铁律 13）。**必须在 startForeground 之后**——
         // ANSS 的 5s 时限不容许把 DB 查询放在建前台之前。
         scope.launch(ioDispatcher) {
@@ -1108,12 +1113,7 @@ class RecordingService : Service() {
         stopSelf()
         // BUG-6 修复：不清除 error 字段——音频错误态（E-1001/E-2001）必须保留到
         // 用户可见，否则循环退出即把错误提示抹掉
-        stateHolder.mutate {
-            RecordingUiState(
-                errorCode = it.errorCode,
-                errorMessage = it.errorMessage,
-            )
-        }
+        resetServiceStateToIdle()
     }
 
     // ── 暂停心跳（用户需求 2：暂停期间维持 HealthCheckWorker 的新鲜心跳） ──
@@ -1134,6 +1134,43 @@ class RecordingService : Service() {
     }
 
     // ── 待命态：快捷录音入口（用户需求：锁屏/状态栏一键开始录音） ──
+
+    /**
+     * 把 UI 可见的服务状态复位为 [RecordingServiceState.IDLE]，仅保留错误字段。
+     *
+     * ## 为什么必须有这个复位（P1 缺陷根因）
+     *
+     * 待命态是「服务**活着**但**没在录**」——前台身份保留、常驻通知换成快捷入口，
+     * 唯一停止的是音频循环。而 `serviceState` 的语义是**业务运行态**，
+     * 不是「服务进程是否存在」。
+     *
+     * 两个语义在此处分叉：待命态下 `serviceState` 若仍停在 `MONITORING`
+     * （`onAudioLoopExited` 退出 `while` 循环时从未改过它），UI 侧判据
+     * `TodayViewModel.isServiceActive` 会持续为 true ⇒ `isSettling` 恒为 false
+     * ⇒ 用户点「结束（结算当天）」后，结算其实**已经成功**
+     * （DB 已置 `SETTLING`、Worker 已入队、进度照常推进），但界面永远停在
+     * 「录音中 + 结束按钮」，点几次都一样 —— 用户体感即「按钮没反应」。
+     *
+     * ## 为什么不能靠 [onDestroy] 复位
+     *
+     * 待命态**刻意不销毁服务**（这正是快捷入口能常驻的原因），故 `onDestroy`
+     * 在这些路径上根本不执行。
+     *
+     * ## 铁律 13 延伸：多路径最终态一致性
+     *
+     * 判据只能依赖持久化状态 + 内存态的「业务含义」，绝不能依赖
+     * 「某条收尾路径恰好顺手改了内存字段」。所有通往待命态的入口都必须调用本方法，
+     * 否则同一业务状态在不同的代码路径下会呈现不同的 UI。
+     */
+    private fun resetServiceStateToIdle() {
+        EchoLog.i(TAG, "服务状态复位为 IDLE（业务上已不在录音）")
+        stateHolder.mutate {
+            RecordingUiState(
+                errorCode = it.errorCode,
+                errorMessage = it.errorMessage,
+            )
+        }
+    }
 
     /**
      * 进入待命态：服务**保持前台**，常驻通知切换为快捷录音入口。
@@ -1198,6 +1235,10 @@ class RecordingService : Service() {
             stopSelfSafely()
             return
         }
+        // 入口已建立 ⇒ 业务上「没在录」，UI 必须同步反映（见 resetServiceStateToIdle 的 KDoc）。
+        // 放在此处而非 startQuickRecordSettingWatch() 之后：复位属于主链路的语义收尾，
+        // 不能被旁支动作（开关监听）的先后顺序影响。
+        resetServiceStateToIdle()
         startQuickRecordSettingWatch()
     }
 
@@ -1495,12 +1536,7 @@ class RecordingService : Service() {
         // 暂停态销毁时循环 finally 不会走停止分支，这里显式移除常驻通知
         stopForegroundCompat()
         // BUG-6 修复：保留错误态（同上），仅重置运行态字段
-        stateHolder.mutate {
-            RecordingUiState(
-                errorCode = it.errorCode,
-                errorMessage = it.errorMessage,
-            )
-        }
+        resetServiceStateToIdle()
         super.onDestroy()
     }
 
