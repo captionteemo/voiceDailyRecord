@@ -508,6 +508,48 @@ adb shell dumpsys activity services <pkg>
      只发可见提示，让音频循环自己因 `recorder` 失败退出。
    两者共用同一段兜底逻辑会造成「通知刷新失败把正在录音的服务停了」。
 
+### 🔴 权威资料不一定适用于当前 targetSdk —— 必须自己做对照实验
+
+**本条是铁律 12 的血泪教训，务必读完。**
+
+查证「`notify()` 覆盖会不会剥夺前台身份」时，StackOverflow 的**早期高票答案**
+明确说：
+
+> Updating the Notification will NOT remove the Service from the foreground status
+> (this can be done only by calling stopForeground)
+
+**这个结论在 targetSdk 35 / Android 15 上是错的。** 真机实测：
+
+```
+【冷启动 T+1s】handleStart 用 startForegroundCompat 建好前台身份
+  通知 flags=ONGOING_EVENT|ONLY_ALERT_ONCE|NO_CLEAR|FOREGROUND_SERVICE
+  服务 isForeground=true foregroundId=1001 types=0x00000080
+
+【音频循环跑起来之后】refreshMonitorNotification 用 notify() 覆盖
+  通知 flags=ONGOING_EVENT|ONLY_ALERT_ONCE        ← FOREGROUND_SERVICE 消失
+  服务 isForeground=false foregroundId=1001 types=0x00000000
+```
+
+**为什么老答案不适用**：那些答案写于 Android 4.x-5.x 时代，当时没有
+FGS 类型、没有 `targetSdk` 约束、也没有 `ForegroundServiceStartNotAllowedException`
+这一整套后台启动限制。**框架行为随版本与 targetSdk 变化**，
+StackOverflow 的高票答案不等于当前行为。
+
+**方法论（本项目通用）**：
+
+| 步骤 | 做法 |
+|---|---|
+| 1 | 找到「官方文档怎么说」→ 只作**假设**，不作结论 |
+| 2 | 找「社区怎么说」→ 记下**版本与 targetSdk**，只作**待验证假设** |
+| 3 | **自己造对照实验**：同一台机、同一 APK、只改一个变量 |
+| 4 | 抓**系统侧权威快照**（`dumpsys`），不要靠日志推断 |
+| 5 | 结论写进 KDoc 时**附上实测数据**，别只写「据说」 |
+
+**对照实验的额外收获**：有时「实验中没复现」比「复现了」更有价值 ——
+本次 T+2s~T+16s 连续 8 次采样**都没有降级**，反而暴露了真正的触发条件是
+「音频循环在跑」（即有监听日）⇒ 无监听日时测不出这个缺陷。
+**这直接决定了 QA 的实验设计必须有「有监听日」这一组。**
+
 ---
 
 ## 铁律 13：两条「入口/监听」并存的状态路径必须给出同一个最终态
