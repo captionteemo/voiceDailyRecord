@@ -253,6 +253,38 @@ class RecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // P2 崩溃修复：僵尸实例守卫（必须在一切分发之前）。
+        //
+        // ## 崩溃窗口是怎么形成的（真机日志实测，t05 全类连跑时炸出）
+        //
+        // `stopService`/`stopSelf` 后，[onDestroy]（主线程）会 `runBlocking` 等音频循环
+        // 收尾（数百毫秒）。**这期间**再来的 `startForegroundService` 会被系统排进主线程
+        // 队列，等 `onDestroy` 跑完后投递到**同一个僵尸实例**上——此时 `destroyed` 已为
+        // true，而本类几乎所有的 action 处理路径都在 `destroyed` 守卫处早退。
+        //
+        // 坑在于 `scope` 是 `@ApplicationScope`（**不随服务销毁而取消**）：僵尸实例上的
+        // `handleQuickStart` 照常跑 use case → `ServiceController.startMonitoring` 再次
+        // `startForegroundService` → `ACTION_START_MONITORING` 再次投到僵尸实例 →
+        // [handleStart] 的 `destroyed` 守卫 return。**整条链没有任何人调
+        // `startForeground`**，而系统从 `startForegroundService` 起就在等——5s 时限一到，
+        // 抛 `ForegroundServiceDidNotStartInTimeException`，**进程崩溃**。
+        //
+        // ## 为什么处置是 stopSelf 而不是补 startForeground
+        //
+        // 补调 `startForeground` 是在给一个已跑完 `onDestroy` 的实例重新挂前台身份
+        // （recorder 已 release、loopJob 已空），AMS 对已销毁记录的行为不可预期。
+        // 而 `stopSelf` 会让系统走 `bringDownServiceLocked`，其中会清除该次投递的
+        // `fgRequired` 并撤销超时等待——即「这次启动我不做前台了」的合法表态，
+        // 崩溃消失。代价是这次动作（如快捷开始录音）丢失，用户重按一次即可；
+        // 换掉的是进程崩溃，值得。
+        //
+        // 返回 `START_NOT_STICKY`：僵尸实例不应再被粘性重启。
+        if (destroyed) {
+            EchoLog.w(TAG, "服务已销毁收到 start（startId=$startId, action=${intent?.action}），stopSelf 清除前台要求")
+            runCatching { stopSelfSafely() }
+                .onFailure { EchoLog.w(TAG, "僵尸实例收尾失败（忽略）", it) }
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             Constants.ACTION_START_MONITORING, Constants.ACTION_RESUME -> handleStart(intent)
             Constants.ACTION_PAUSE -> handlePause()
