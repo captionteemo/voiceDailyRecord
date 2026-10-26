@@ -446,6 +446,111 @@ print([t.decode('utf-16-le','ignore') for t in
 
 ---
 
+## 铁律 12：前台服务通知只能由 `startForeground()` 持有，不能用 `notify()` 覆盖
+
+**规则**：前台服务（FGS）持有的常驻通知，**每一次更新都必须走
+`Service.startForeground(id, notification)`**，不得用
+`NotificationManager.notify(id, notification)` 去覆盖同一条通知。
+
+### 为什么（机制层面）
+
+系统给通知打上 `FOREGROUND_SERVICE` flag、把 `ServiceRecord.isForeground` 置为
+`true`、把 FGS 类型记进 `ServiceRecord.types` —— 这三件事**全部发生在
+`Service.startForeground()` 这一次调用里**。
+
+用 `notify()` 覆盖同 id 的通知，等于**用一条普通通知替换掉前台服务通知**：
+flag 丢失、`isForeground` 变 `false`、`types` 归零。后果不是「通知不见了」
+（通知还在，用户看着正常），而是：
+
+- 服务**失去前台身份** → 随时可被系统回收，且失去前台服务的保活优先级；
+- 对全天录音场景 = **录音被静默中断**；
+- 用户侧表现为「锁屏的 bar 还在，但点了没反应」——**僵尸入口**。
+
+### 易踩的坑：`setForegroundServiceBehavior` 不是 flag 来源
+
+`NotificationCompat.setForegroundServiceBehavior(FOREGROUND_SERVICE_IMMEDIATE)`
+只控制「通知出现时是否立即抢占横幅」，**不会**让系统给通知打
+`FOREGROUND_SERVICE` flag。看到它就以为「已经是前台通知了」是错的。
+
+### 真机验证方法（两条命令，缺一不可）
+
+```bash
+# ① 通知侧：flags 里必须有 FOREGROUND_SERVICE
+adb shell dumpsys notification --noredact | grep -A 22 "pkg=<pkg>"
+
+# ② 服务侧：isForeground=true 且 types!=0
+adb shell dumpsys activity services <pkg>
+```
+
+**只看其中一条会误判**：
+- 只看①：通知确实带 flag，但服务可能已不是前台（flag 是历史残留）；
+- 只看②：服务在前台，但通知内容可能已被 `notify()` 换成普通通知。
+
+### 对照实验（本项目 BUG-14 的真实数据）
+
+| 时刻 | 通知 flags | `isForeground` | `types` |
+|------|-----------|----------------|---------|
+| `handleStart` 刚建完前台 | `ONGOING_EVENT\|ONLY_ALERT_ONCE\|FOREGROUND_SERVICE` | `true` | `0x00000080` |
+| 音频循环跑起来 5 秒后 | `ONGOING_EVENT\|ONLY_ALERT_ONCE`（**flag 丢了**） | `false` | `0x00000000` |
+
+中间只发生了一件事：音频循环的 `pushStateThrottled()`（每 5 秒一次）
+用 `notify()` 覆盖了通知。
+
+### 附带约束
+
+1. **`startForeground` 对已在前台的服务是幂等更新**，官方允许重复调用来改内容；
+   但每次调用都会重走一遍 FGS 类型校验（microphone 型 → 查 `RECORD_AUDIO`）。
+2. 频繁刷新（如每 5 秒刷计时文本）时应**单独定义通知刷新频率常量**，
+   不要改内部状态推送频率常量（两者语义不同）。
+3. **失败兜底要按场景区分**：
+   - 待命态（本来就没在录音）建入口失败 → 可安全 `stopSelf`；
+   - **监听态**（正在录音）通知刷新失败 → **绝不能停服务**，
+     只发可见提示，让音频循环自己因 `recorder` 失败退出。
+   两者共用同一段兜底逻辑会造成「通知刷新失败把正在录音的服务停了」。
+
+---
+
+## 铁律 13：两条「入口/监听」并存的状态路径必须给出同一个最终态
+
+**规则**：当同一个用户意图（例如「锁屏上有个能开始录音的 bar」）可以从多条
+路径进入时，**所有路径的最终态必须一致**，且判据必须用**持久化状态**，
+不能用**内存态**。
+
+### 典型症状
+
+同一份需求有两条入口路径：
+- 路径 A：App 冷启动 → `MainActivity` 主动建入口；
+- 路径 B：服务被系统重启（`START_STICKY` + 空 Intent）→ 服务自行恢复。
+
+路径 B 按**持久化**状态判定（有监听中的录音日 → 恢复监听），路径 A 只查
+**开关**（`quickRecordNotificationEnabled`）→ 于是路径 A 会先建出一条快捷入口
+通知，随后又被恢复的监听通知顶替。用户看到「bar 闪一下就没了」。
+
+### 判据
+
+- **内存态**（`running` / `paused` / `standby`）只在**进程存活期间**有效；
+  进程被杀后全部丢失，**不能**用来判断「用户当天是否在监听」。
+- **持久化判据**用 `recordingRepository.observeDays()` 里
+  `state == DayState.MONITORING` 的行 —— 与 `handleRestartWithoutIntent`、
+  `BootReceiver.resumeMonitoringIfNeeded` 保持一致。
+
+### 时限约束（顺序不可颠倒）
+
+`startForegroundService` 之后必须在 **5 秒（ANSS）** 内调用 `startForeground`，
+否则系统抛 `ForegroundServiceDidNotStartInTimeException` → 进程崩溃。
+
+所以正确顺序是：**先 `startForeground` 挂出通知（同步、保证时限）→ 再异步查
+持久化状态 → 若状态要求换一种通知，再换回去**。
+
+**绝不能**为了「语义正确」把查 DB 提到 `startForeground` 之前。
+
+### 附带约定：读不到持久化状态时按保守侧处理
+
+查 DB 失败 ⇒ **按「有监听日」处理**（宁可显示监听通知，也不要在用户正在录音时
+给出快捷入口）。理由与「读设置失败按 false」同源：**不猜、偏保守**。
+
+---
+
 ## 提交前自检清单
 
 - [ ] 新增的错误码：**重试有意义吗？** 没意义 → 必须走「终态降级」分支
@@ -456,3 +561,7 @@ print([t.decode('utf-16-le','ignore') for t in
 - [ ] 新增「提示」类文案：加 `SETTLE_NOTE_PREFIX` 前缀了吗？UI 会正确归类吗？
 - [ ] 需要 Room 新列吗？**能编码进现有字段吗？**（优先零迁移）
 - [ ] 跑过 `testDebugUnitTest` + `assembleDebug` 吗？APK 里的东西核验过吗？
+- [ ] **改了前台服务的通知吗？** 通知侧 `flags` 含 `FOREGROUND_SERVICE`
+      吗？服务侧 `isForeground=true` 且 `types!=0` 吗？（铁律 12，两条都要查）
+- [ ] **新增了一条状态恢复路径吗？** 它的最终态与其他路径一致吗？
+      判据用的是持久化状态还是内存态？（铁律 13）
